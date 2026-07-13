@@ -1,0 +1,29 @@
+# --- Node / pnpm ---
+node_modules/
+dist/
+*.local
+.pnpm-store/
+
+# --- Rust / Tauri ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Editor & OS noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# --- Env & secrets (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Build artifacts ---
+*.log
+coverage/
+
+# --- Claude Code local state (keep agents/, ignore personal settings) ---
+.claude/settings.local.json

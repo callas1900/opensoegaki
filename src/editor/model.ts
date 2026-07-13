@@ -1,0 +1,56 @@
+/**
+ * Annotation object model — the single source of truth for everything drawn
+ * on top of the captured image. Annotations stay editable objects until the
+ * user exports; rasterization happens only in `exporter.ts`.
+ */
+
+export type Point = { x: number; y: number };
+
+export type ToolKind = "arrow" | "rect" | "text";
+
+interface AnnotationBase {
+  id: string;
+  kind: ToolKind;
+  color: string;
+  strokeWidth: number;
+}
+
+export interface ArrowAnnotation extends AnnotationBase {
+  kind: "arrow";
+  from: Point;
+  to: Point;
+}
+
+export interface RectAnnotation extends AnnotationBase {
+  kind: "rect";
+  a: Point; // one corner
+  b: Point; // opposite corner
+}
+
+export interface TextAnnotation extends AnnotationBase {
+  kind: "text";
+  at: Point;
+  text: string;
+  fontSize: number;
+}
+
+export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation;
+
+/** Editor document: background bitmap + ordered annotation list. */
+export interface Doc {
+  imageBitmap: ImageBitmap | null;
+  annotations: Annotation[];
+}
+
+export const PALETTE = ["#e8465a", "#2f7de1", "#2fae5f", "#f5a623", "#222222", "#ffffff"] as const;
+
+export const DEFAULTS = {
+  color: PALETTE[0] as string,
+  strokeWidth: 6,
+  fontSize: 28,
+};
+
+let counter = 0;
+export function nextId(): string {
+  return `a${Date.now().toString(36)}${(counter++).toString(36)}`;
+}

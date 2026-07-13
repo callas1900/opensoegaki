@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenScrawl</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar">
+        <button data-tool="arrow" class="tool active" title="Arrow (A)">➤</button>
+        <button data-tool="rect" class="tool" title="Rectangle (R)">▭</button>
+        <button data-tool="text" class="tool" title="Text (T)">T</button>
+        <span class="sep"></span>
+        <button id="undo" title="Undo (Ctrl+Z)">↩</button>
+        <button id="redo" title="Redo (Ctrl+Shift+Z)">↪</button>
+        <span class="sep"></span>
+        <div id="palette"></div>
+      </header>
+      <main id="stage">
+        <canvas id="canvas"></canvas>
+        <p id="empty-hint">Press <kbd>Ctrl+Shift+5</kbd> for region capture or <kbd>Ctrl+Shift+6</kbd> for full screen.</p>
+      </main>
+      <footer id="share-bar">
+        <div id="drag-tab" title="Drag me into another app to share as PNG">⇱ drag to share</div>
+        <button id="copy" title="Copy PNG to clipboard (Ctrl+C)">Copy</button>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
