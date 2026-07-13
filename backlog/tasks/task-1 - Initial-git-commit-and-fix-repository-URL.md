@@ -1,10 +1,10 @@
 ---
 id: TASK-1
 title: Initial git commit and fix repository URL
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-12 02:44'
-updated_date: '2026-07-13 09:11'
+updated_date: '2026-07-13 09:17'
 labels:
   - foundation
 dependencies: []
@@ -20,6 +20,12 @@ The repo was just git-init'ed. Make the initial commit of the existing codebase 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Initial commit exists on main with the full current tree
-- [ ] #2 Cargo.toml repository field points to the real GitHub repo
+- [x] #1 Initial commit exists on main with the full current tree
+- [x] #2 Cargo.toml repository field points to the real GitHub repo
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done. Initial commit d0f8da3 (52 files); repository URL set to github.com/callas1900/openscrawl. Follow-up commit 1f2ed3a tracks Cargo.lock.
+<!-- SECTION:NOTES:END -->
