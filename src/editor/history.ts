@@ -1,30 +1,38 @@
 /**
- * Minimal snapshot-based undo/redo. Annotation arrays are small, so we store
- * full copies of the annotation list per step. Revisit if documents grow.
+ * Snapshot-based undo/redo over the whole document (background +
+ * annotations). Annotation arrays are small, so we store full copies of the
+ * annotation list per step. The background bitmap is stored by reference —
+ * never structuredClone'd — since bitmaps are large and are never mutated in
+ * place by the editor, so sharing the reference across steps is safe.
  */
 import type { Annotation } from "./model";
 
-export class History {
-  private past: Annotation[][] = [];
-  private future: Annotation[][] = [];
+export interface DocSnapshot {
+  imageBitmap: ImageBitmap | null;
+  annotations: Annotation[];
+}
 
-  /** Call BEFORE mutating the annotation list. */
-  push(current: Annotation[]): void {
-    this.past.push(structuredClone(current));
+export class History {
+  private past: DocSnapshot[] = [];
+  private future: DocSnapshot[] = [];
+
+  /** Call BEFORE mutating the document. */
+  push(current: DocSnapshot): void {
+    this.past.push(cloneSnapshot(current));
     this.future = [];
   }
 
-  undo(current: Annotation[]): Annotation[] | null {
+  undo(current: DocSnapshot): DocSnapshot | null {
     const prev = this.past.pop();
     if (!prev) return null;
-    this.future.push(structuredClone(current));
+    this.future.push(cloneSnapshot(current));
     return prev;
   }
 
-  redo(current: Annotation[]): Annotation[] | null {
+  redo(current: DocSnapshot): DocSnapshot | null {
     const next = this.future.pop();
     if (!next) return null;
-    this.past.push(structuredClone(current));
+    this.past.push(cloneSnapshot(current));
     return next;
   }
 
@@ -32,4 +40,9 @@ export class History {
     this.past = [];
     this.future = [];
   }
+}
+
+/** Copy the annotation list but keep the bitmap by reference. */
+function cloneSnapshot(snapshot: DocSnapshot): DocSnapshot {
+  return { imageBitmap: snapshot.imageBitmap, annotations: structuredClone(snapshot.annotations) };
 }

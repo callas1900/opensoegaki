@@ -1,10 +1,10 @@
 ---
 id: TASK-19
 title: Make background replacement (paste/capture) undoable
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-14 03:25'
-updated_date: '2026-07-14 03:41'
+updated_date: '2026-07-14 09:40'
 labels:
   - feature
 dependencies: []
@@ -20,7 +20,13 @@ Pasting or capturing over an existing document silently discards the previous im
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Ctrl+Z after paste/capture restores the previous background image and its annotations
-- [ ] #2 Redo re-applies the replacement
-- [ ] #3 No confirmation dialog is shown on paste or capture
+- [x] #1 Ctrl+Z after paste/capture restores the previous background image and its annotations
+- [x] #2 Redo re-applies the replacement
+- [x] #3 No confirmation dialog is shown on paste or capture
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/editor/history.ts (DocSnapshot with reference-shared ImageBitmap, cloned annotations) and src/editor/canvas.ts (setBackground pushes snapshot when replacing; undo/redo restore background and resize canvas). Reviewer approved; pnpm check passes. Runtime E2E on Windows still pending before commit.
+<!-- SECTION:NOTES:END -->

@@ -4,6 +4,7 @@ title: 'Selection tool: hit-test, move, delete annotations'
 status: To Do
 assignee: []
 created_date: '2026-07-12 02:45'
+updated_date: '2026-07-14 09:40'
 labels:
   - editor
 dependencies: []
@@ -22,3 +23,9 @@ Annotations cannot be edited after placement. Add a select tool: hit-testing aga
 - [ ] #1 Clicking an annotation selects it with a visible highlight
 - [ ] #2 Selected annotation can be moved by drag and deleted with Del, both undoable
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design note agreed 2026-07-14: docs/design/2026-07-14-selection-and-size-controls.md (implementation steps 1-6). No resize handles; single-select; new pure module src/editor/hittest.ts.
+<!-- SECTION:NOTES:END -->

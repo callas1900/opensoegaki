@@ -4,6 +4,7 @@ title: Stroke-width and font-size controls in toolbar
 status: To Do
 assignee: []
 created_date: '2026-07-12 02:45'
+updated_date: '2026-07-14 09:40'
 labels:
   - editor
 dependencies: []
@@ -21,3 +22,9 @@ DEFAULTS in src/editor/model.ts are fixed (strokeWidth 6, fontSize 28). Add tool
 <!-- AC:BEGIN -->
 - [ ] #1 User can pick at least S/M/L stroke width and font size before drawing
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design note agreed 2026-07-14: docs/design/2026-07-14-selection-and-size-controls.md (implementation steps 7-9). One S/M/L control sets both stroke and font presets; new annotations only, no live restyle of selection.
+<!-- SECTION:NOTES:END -->

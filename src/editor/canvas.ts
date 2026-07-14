@@ -4,7 +4,7 @@
  */
 import { type Annotation, type Doc, type Point, type ToolKind, DEFAULTS, nextId } from "./model";
 import { renderAnnotations } from "./render";
-import { History } from "./history";
+import { History, type DocSnapshot } from "./history";
 
 export class Editor {
   readonly doc: Doc = { imageBitmap: null, annotations: [] };
@@ -33,30 +33,51 @@ export class Editor {
     this.setBackground(await createImageBitmap(blob));
   }
 
-  /** Shared tail of loadImage/loadImageBlob: reset the document and resize the canvas. */
+  /**
+   * Shared tail of loadImage/loadImageBlob: replace the background and resize
+   * the canvas. If a document is already loaded, the previous {background,
+   * annotations} snapshot is pushed onto history first so the replacement is
+   * undoable; on the very first load there is nothing to undo back to, so
+   * history is cleared instead.
+   */
   private setBackground(bitmap: ImageBitmap): void {
+    if (this.doc.imageBitmap !== null) {
+      this.history.push(this.snapshot());
+    } else {
+      this.history.clear();
+    }
     this.doc.imageBitmap = bitmap;
     this.doc.annotations = [];
-    this.history.clear();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
     this.render();
   }
 
   undo(): void {
-    const prev = this.history.undo(this.doc.annotations);
-    if (prev) {
-      this.doc.annotations = prev;
-      this.render();
-    }
+    const prev = this.history.undo(this.snapshot());
+    if (prev) this.restore(prev);
   }
 
   redo(): void {
-    const next = this.history.redo(this.doc.annotations);
-    if (next) {
-      this.doc.annotations = next;
-      this.render();
+    const next = this.history.redo(this.snapshot());
+    if (next) this.restore(next);
+  }
+
+  // Returns a live reference to doc.annotations; safe only because every caller
+  // that stores this snapshot routes it through History's cloneSnapshot first.
+  private snapshot(): DocSnapshot {
+    return { imageBitmap: this.doc.imageBitmap, annotations: this.doc.annotations };
+  }
+
+  /** Apply a restored snapshot, resizing the canvas to match its background before rendering. */
+  private restore(snapshot: DocSnapshot): void {
+    this.doc.imageBitmap = snapshot.imageBitmap;
+    this.doc.annotations = snapshot.annotations;
+    if (snapshot.imageBitmap) {
+      this.canvas.width = snapshot.imageBitmap.width;
+      this.canvas.height = snapshot.imageBitmap.height;
     }
+    this.render();
   }
 
   render(): void {
@@ -125,7 +146,7 @@ export class Editor {
   }
 
   private commit(a: Annotation): void {
-    this.history.push(this.doc.annotations);
+    this.history.push(this.snapshot());
     this.doc.annotations = [...this.doc.annotations, a];
   }
 }
