@@ -3,14 +3,16 @@
 **Capture. Scrawl. Share.** — A fast, lightweight, open-source screenshot annotation tool.
 
 OpenScrawl is a spiritual successor to the discontinued Skitch for Windows. It lives in
-your system tray, captures your screen with a hotkey, lets you scrawl arrows, boxes and
-text on it, and hands the result to any other app with a single drag.
+your system tray; shoot a screenshot with the OS tool (Win+Shift+S) and paste it in with
+Ctrl+V to scrawl arrows, boxes and text on it, then hand the result to any other app with
+a single drag.
 
 > **Status:** 🚧 Early development (MVP). Windows 11 first; macOS support is planned.
 
 ## Features (MVP scope)
 
-- **Capture** — region-select and full-screen capture via a global hotkey
+- **Paste to annotate** — paste a screenshot from the clipboard with `Ctrl+V`; a
+  **Capture** toolbar button is also available for the full screen
 - **Annotate** — outlined arrows, rectangles, and text that stay readable on any background
 - **Undo / Redo** — annotations are objects, not pixels, until you export
 - **Share** — drag the tab at the bottom of the window straight into Slack, a browser,
@@ -49,15 +51,14 @@ pnpm tauri build
 
 | Action                  | Shortcut               |
 | ----------------------- | ---------------------- |
-| Region capture          | `Ctrl+Shift+5`         |
-| Full-screen capture     | `Ctrl+Shift+6`         |
+| Paste screenshot        | `Ctrl+V`               |
 | Copy result to clipboard| `Ctrl+C` (in editor)   |
 
 ## Project layout
 
 ```
 src/           TypeScript frontend (annotation editor, capture overlay)
-src-tauri/     Rust core (tray, hotkeys, screen capture, drag-out)
+src-tauri/     Rust core (tray, screen capture, drag-out)
 docs/          Architecture and design documents
 .claude/       AI-assisted development configuration (Claude Code agents)
 ```

@@ -9,6 +9,8 @@
   <body>
     <div id="app">
       <header id="toolbar">
+        <button id="capture" title="Capture full screen">⛶</button>
+        <span class="sep"></span>
         <button data-tool="arrow" class="tool active" title="Arrow (A)">➤</button>
         <button data-tool="rect" class="tool" title="Rectangle (R)">▭</button>
         <button data-tool="text" class="tool" title="Text (T)">T</button>
@@ -20,7 +22,7 @@
       </header>
       <main id="stage">
         <canvas id="canvas"></canvas>
-        <p id="empty-hint">Press <kbd>Ctrl+Shift+5</kbd> for region capture or <kbd>Ctrl+Shift+6</kbd> for full screen.</p>
+        <p id="empty-hint">Press <kbd>Ctrl+V</kbd> to paste a screenshot, or click <strong>Capture</strong> for the full screen.</p>
       </main>
       <footer id="share-bar">
         <div id="drag-tab" title="Drag me into another app to share as PNG">⇱ drag to share</div>

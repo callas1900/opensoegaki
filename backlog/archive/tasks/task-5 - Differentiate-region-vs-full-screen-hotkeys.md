@@ -4,6 +4,7 @@ title: Differentiate region vs full-screen hotkeys
 status: To Do
 assignee: []
 created_date: '2026-07-12 02:44'
+updated_date: '2026-07-14 03:12'
 labels:
   - mvp
 dependencies:
@@ -22,3 +23,9 @@ Both shortcuts currently run the identical full-screen path (src-tauri/src/lib.r
 <!-- AC:BEGIN -->
 - [ ] #1 Ctrl+Shift+5 triggers region flow, Ctrl+Shift+6 triggers full-screen flow
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-07-14: Obsolete. Global capture hotkeys are being removed entirely (TASK-18); there is nothing to differentiate.
+<!-- SECTION:NOTES:END -->

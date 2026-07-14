@@ -25,11 +25,21 @@ export class Editor {
   /** Load a captured PNG (raw bytes) as the new background. */
   async loadImage(png: Uint8Array): Promise<void> {
     const blob = new Blob([png as BlobPart], { type: "image/png" });
-    this.doc.imageBitmap = await createImageBitmap(blob);
+    this.setBackground(await createImageBitmap(blob));
+  }
+
+  /** Load an arbitrary image blob (e.g. from a clipboard paste) as the new background. */
+  async loadImageBlob(blob: Blob): Promise<void> {
+    this.setBackground(await createImageBitmap(blob));
+  }
+
+  /** Shared tail of loadImage/loadImageBlob: reset the document and resize the canvas. */
+  private setBackground(bitmap: ImageBitmap): void {
+    this.doc.imageBitmap = bitmap;
     this.doc.annotations = [];
     this.history.clear();
-    this.canvas.width = this.doc.imageBitmap.width;
-    this.canvas.height = this.doc.imageBitmap.height;
+    this.canvas.width = bitmap.width;
+    this.canvas.height = bitmap.height;
     this.render();
   }
 

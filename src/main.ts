@@ -1,9 +1,9 @@
 /**
- * Frontend entry point: wires the toolbar, hotkeys, Tauri events and share bar
- * to the Editor. OS-level work (capture, tray, drag-out) lives in src-tauri/.
+ * Frontend entry point: wires the toolbar, paste/capture input, keyboard
+ * shortcuts and share bar to the Editor. OS-level work (capture, tray,
+ * drag-out) lives in src-tauri/.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { Editor } from "./editor/canvas";
@@ -53,13 +53,46 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- capture events from the Rust core --------------------------------------
+// ---- input: paste and full-screen capture -----------------------------------
 
-// Payload: base64-encoded PNG of the captured region/screen.
-void listen<string>("openscrawl://captured", async (event) => {
-  const bytes = Uint8Array.from(atob(event.payload), (c) => c.charCodeAt(0));
-  await editor.loadImage(bytes);
+/** Hide the empty-state hint once the editor has a background image. */
+function showLoadedState(): void {
   emptyHint.style.display = "none";
+}
+
+// Paste is the primary capture path: the user shoots with the OS tool
+// (Win+Shift+S / Cmd+Shift+4) and pastes the result with Ctrl/Cmd+V.
+window.addEventListener("paste", (e) => {
+  e.preventDefault();
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith("image/")) {
+      const blob = item.getAsFile();
+      if (blob) {
+        void editor
+          .loadImageBlob(blob)
+          .then(showLoadedState)
+          .catch((err) => console.error("paste failed:", err));
+      }
+      return;
+    }
+  }
+});
+
+const captureBtn = document.querySelector<HTMLButtonElement>("#capture")!;
+captureBtn.addEventListener("click", async () => {
+  captureBtn.disabled = true;
+  try {
+    const b64 = await invoke<string>("capture_fullscreen");
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    await editor.loadImage(bytes);
+    showLoadedState();
+  } catch (err) {
+    console.error("capture failed:", err);
+  } finally {
+    captureBtn.disabled = false;
+  }
 });
 
 // ---- share bar ---------------------------------------------------------------

@@ -9,18 +9,19 @@ OpenScrawl is a tray-resident screenshot annotation tool built on Tauri 2.
 │                                                                  │
 │  Rust core (src-tauri/)              TypeScript UI (src/)        │
 │  ─────────────────────               ───────────────────         │
-│  tray icon & lifecycle    events →   editor (Canvas)             │
-│  global hotkeys           ────────   annotation object model     │
-│  screen capture (xcap)    ← invoke   undo/redo history           │
-│  drag-out temp files                 PNG export (OffscreenCanvas)│
-│  clipboard plugin                    toolbar / palette UI        │
+│  tray icon & lifecycle               editor (Canvas)             │
+│  screen capture (xcap)    ← invoke   annotation object model     │
+│  drag-out temp files                 undo/redo history           │
+│  clipboard plugin                    PNG export (OffscreenCanvas)│
+│                                       paste (clipboard) handler   │
+│                                       toolbar / palette UI        │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Responsibility split
 
-- **Rust owns the OS.** Everything that touches the operating system — tray, global
-  shortcuts, monitor capture, temp files for drag-and-drop — lives in `src-tauri/`.
+- **Rust owns the OS.** Everything that touches the operating system — tray,
+  monitor capture, temp files for drag-and-drop — lives in `src-tauri/`.
 - **TypeScript owns the canvas.** All drawing, hit-testing, interaction and export
   logic lives in `src/`. It never touches the filesystem directly.
 
@@ -40,21 +41,32 @@ model through one pure function (`render.ts`). Benefits:
 
 | Direction | Name | Payload | Purpose |
 | --- | --- | --- | --- |
-| Rust → TS (event) | `openscrawl://captured` | base64 PNG string | New capture ready |
+| TS → Rust (command) | `capture_fullscreen` | none → returns base64 PNG string | Hide window, capture primary monitor, show window, return the shot |
 | TS → Rust (command) | `prepare_drag_file` | `png: number[]` → returns temp file path | Materialize export for OS drag |
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
 
 ## Capture flow
 
-1. User presses `Ctrl+Shift+5` / `Ctrl+Shift+6` (registered by
-   `tauri-plugin-global-shortcut`).
-2. Rust captures the primary monitor via `xcap` and emits `openscrawl://captured`.
-3. The editor loads the PNG as an `ImageBitmap` and resets the document.
+OpenScrawl's primary input path is pasting a screenshot taken with the OS tool; a
+toolbar button covers full-screen capture as a secondary path.
 
-**Known gap (MVP):** region capture currently captures the full screen; the
-click-and-drag crop overlay (`src/capture/`) is the next planned task. Design intent:
-a borderless fullscreen window showing the frozen capture, drag-to-select, crop in TS.
+1. **Paste (primary).** The user shoots with the OS screenshot tool (Win+Shift+S;
+   Cmd+Shift+4 on macOS) and presses Ctrl+V / Cmd+V in OpenScrawl. The webview fires
+   a DOM `paste` event; `main.ts` reads the first `image/*` item off
+   `ClipboardEvent.clipboardData`, hands the `Blob` to `editor.loadImageBlob`, which
+   decodes it with `createImageBitmap` and resets the document. No Rust involvement
+   and no clipboard-read permission are needed — the WebView delivers the image
+   directly. The same DOM event fires under WKWebView, so this path is macOS-safe
+   with no platform branch.
+2. **Capture button (secondary).** Clicking the toolbar's Capture button invokes the
+   `capture_fullscreen` command, which hides the main window, waits briefly for the
+   compositor to repaint without it, captures the primary monitor via `xcap`, shows
+   the window again, and returns a base64 PNG — restoring the window even if capture
+   fails. The frontend decodes the result and loads it the same way as a pasted image.
+
+**Known gap (MVP):** the Capture button always captures the full screen; a
+click-and-drag crop overlay (`src/capture/`) is a possible future addition.
 
 ## Share flow (drag-out)
 
@@ -73,5 +85,6 @@ way unless a feature is explicit, opt-in, and reviewed.
 
 1. **Windows 11** (current) — NSIS/MSI bundles.
 2. **macOS** — xcap and tauri-plugin-drag both support it; main work items are
-   Screen Recording permission UX, `.icns` icon, and hotkey conventions (`Cmd+Shift+5`
-   conflicts with the system screenshot tool — needs a different default).
+   Screen Recording permission UX (needed for the Capture button's `xcap` call) and a
+   `.icns` icon. The paste path needs no platform-specific work: WKWebView fires the
+   same DOM `paste` event as WebView2 for Cmd+V.

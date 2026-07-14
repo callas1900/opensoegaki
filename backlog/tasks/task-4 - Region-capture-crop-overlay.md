@@ -4,11 +4,12 @@ title: Region-capture crop overlay
 status: To Do
 assignee: []
 created_date: '2026-07-12 02:44'
+updated_date: '2026-07-14 03:12'
 labels:
   - mvp
 dependencies:
   - TASK-3
-priority: high
+priority: low
 ordinal: 4000
 ---
 
@@ -24,3 +25,9 @@ The declared next planned task (docs/ARCHITECTURE.md 'Known gap'). Build the reg
 - [ ] #2 Ctrl+Shift+5 opens the overlay; dragging a rectangle yields a cropped image in the editor
 - [ ] #3 Esc cancels the overlay without changing the current document
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-07-14: Deprioritized. Product direction changed — region capture is covered by the OS screenshot tool (Win+Shift+S) plus clipboard paste (TASK-17). An in-app crop overlay is now a nice-to-have.
+<!-- SECTION:NOTES:END -->

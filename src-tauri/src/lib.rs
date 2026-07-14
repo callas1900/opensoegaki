@@ -1,4 +1,4 @@
-//! OpenScrawl core: tray residency, global hotkeys, capture commands, drag-out.
+//! OpenScrawl core: tray residency, capture commands, drag-out.
 
 mod capture;
 
@@ -6,12 +6,8 @@ use base64::Engine;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager,
+    AppHandle, Manager,
 };
-use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
-
-/// Event carrying a base64 PNG of a fresh capture to the frontend.
-const CAPTURED_EVENT: &str = "openscrawl://captured";
 
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -20,15 +16,32 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn capture_and_emit(app: &AppHandle) {
-    match capture::capture_primary_monitor() {
-        Ok(png) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-            show_main_window(app);
-            let _ = app.emit(CAPTURED_EVENT, b64);
+/// Hide the main window, let the compositor repaint without it, capture the
+/// primary monitor, then restore the window. Returns a base64 PNG.
+///
+/// The window is always restored, even on capture failure, so the app never
+/// gets stuck hidden. The hide/sleep/capture/show sequence runs on a blocking
+/// task (window methods are thread-safe to call from there) so the sleep
+/// never occupies an async worker thread.
+#[tauri::command]
+async fn capture_fullscreen(app: AppHandle) -> Result<String, String> {
+    let png = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
         }
-        Err(e) => eprintln!("capture failed: {e}"),
-    }
+
+        // Give the compositor time to repaint the desktop without our window.
+        // ~150ms is a starting point; may need tuning per platform/hardware.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let result = capture::capture_primary_monitor();
+        show_main_window(&app);
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(png))
 }
 
 /// Write the exported PNG to a temp file so the OS drag can reference a path.
@@ -55,23 +68,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_drag::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([
-                    // Region capture (MVP: full capture; frontend crop overlay is TODO)
-                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Digit5),
-                    // Full-screen capture
-                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Digit6),
-                ])
-                .expect("failed to parse default shortcuts")
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        capture_and_emit(app);
-                    }
-                })
-                .build(),
-        )
-        .invoke_handler(tauri::generate_handler![prepare_drag_file])
+        .invoke_handler(tauri::generate_handler![
+            prepare_drag_file,
+            capture_fullscreen
+        ])
         .setup(|app| {
             // Tray icon with a minimal menu; closing the window hides to tray.
             let open = MenuItem::with_id(app, "open", "Open OpenScrawl", true, None::<&str>)?;
@@ -80,7 +80,7 @@ pub fn run() {
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().expect("bundled icon").clone())
                 .menu(&menu)
-                .tooltip("OpenScrawl — Ctrl+Shift+5 to capture")
+                .tooltip("OpenScrawl — paste a screenshot to annotate")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main_window(app),
                     "quit" => {
