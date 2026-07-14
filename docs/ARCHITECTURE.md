@@ -34,8 +34,35 @@ The live canvas (`canvas.ts`) and the exporter (`exporter.ts`) both render the s
 model through one pure function (`render.ts`). Benefits:
 
 - Undo/redo is a list snapshot, not a bitmap diff (`history.ts`)
-- Future features fall out naturally: select/move/delete, a re-editable ".scrawl"
-  file format, SVG export
+- Select/move/delete (below) and a re-editable ".scrawl" file format or SVG export
+  fall out naturally from the same object model
+
+Selection itself is **not** part of the document: `Editor.selectedId` is transient
+view state (a `string | null` keyed by annotation `id`), never stored on `doc`,
+never `structuredClone`d into a history snapshot, and never passed through
+`renderAnnotations` — so it cannot be undone/redone as data and cannot leak into
+an exported PNG.
+
+## Selection & hit-testing
+
+`src/editor/hittest.ts` is pure, format-agnostic geometry (`boundsOf`, `hitTest`)
+over the annotation model — the same code a future `.scrawl` loader or SVG exporter
+could reuse. It is deliberately **never imported by `exporter.ts`**; that import
+boundary is the mechanical guarantee that selection chrome cannot be rasterized
+into exported/copied images. The selection marquee itself is drawn by a private
+`Editor.drawSelectionOverlay` method, called from `Editor.render()` after
+`renderAnnotations` and the draft — i.e. only reachable from the live canvas path.
+
+Hit-testing rules:
+- **Rects use an edge band, not the filled interior** — since rects render as
+  outlines, clicking the hollow center must not select a large rect that visually
+  contains other shapes. A hit requires the point to be within tolerance of the
+  perimeter (inflated outer bounds minus deflated inner bounds).
+- **Arrows** hit-test against distance to the shaft segment; **text** hit-tests
+  against the filled measured bounding box.
+- Tolerance is computed in **bitmap pixels**, scale-compensated at the call site
+  in `canvas.ts` (`BASE_TOL_PX * (canvas.width / rect.width)`), since the canvas
+  is CSS-scaled but `hittest.ts` itself stays unit-agnostic.
 
 ## IPC contract
 
@@ -45,6 +72,23 @@ model through one pure function (`render.ts`). Benefits:
 | TS → Rust (command) | `prepare_drag_file` | `png: number[]` → returns temp file path | Materialize export for OS drag |
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
+
+The selection tool (hit-test/move/delete) is a pure `src/` feature and introduces
+no IPC changes; the table above is unaffected.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+Z` / `Cmd+Z` | Undo |
+| `Ctrl+Shift+Z` / `Cmd+Shift+Z` | Redo |
+| `Ctrl+C` / `Cmd+C` | Copy exported PNG to clipboard |
+| `Del` / `Backspace` | Delete the selected annotation (undoable) |
+| `Esc` | Deselect |
+
+`Del`/`Backspace`/`Esc` are gated by an `isTypingTarget` guard in `main.ts` so a
+global handler never eats keys destined for a text field (e.g. a future inline
+text editor).
 
 ## Capture flow
 
@@ -67,6 +111,14 @@ toolbar button covers full-screen capture as a secondary path.
 
 **Known gap (MVP):** the Capture button always captures the full screen; a
 click-and-drag crop overlay (`src/capture/`) is a possible future addition.
+
+## Toolbar
+
+The toolbar's first button is **Select** (`V`), an opt-in tool alongside the three
+draw tools (arrow/rect/text, default). Selecting an annotation shows a dashed
+marquee and allows drag-to-move or `Del`/`Backspace` to remove it (see
+"Selection & hit-testing" above); switching tools, `Esc`, or clicking empty canvas
+clears the selection. New annotations are not auto-selected after drawing.
 
 ## Share flow (drag-out)
 

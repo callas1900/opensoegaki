@@ -1,10 +1,10 @@
 ---
 id: TASK-8
 title: 'Selection tool: hit-test, move, delete annotations'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-12 02:45'
-updated_date: '2026-07-14 09:40'
+updated_date: '2026-07-14 12:47'
 labels:
   - editor
 dependencies: []
@@ -20,9 +20,11 @@ Annotations cannot be edited after placement. Add a select tool: hit-testing aga
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Clicking an annotation selects it with a visible highlight
-- [ ] #2 Selected annotation can be moved by drag and deleted with Del, both undoable
+- [x] #1 Clicking an annotation selects it with a visible highlight
+- [x] #2 Selected annotation can be moved by drag and deleted with Del, both undoable
 <!-- AC:END -->
+
+
 
 ## Implementation Notes
 

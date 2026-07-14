@@ -7,6 +7,7 @@
 export type Point = { x: number; y: number };
 
 export type ToolKind = "arrow" | "rect" | "text";
+export type Tool = ToolKind | "select";
 
 interface AnnotationBase {
   id: string;
@@ -53,4 +54,24 @@ export const DEFAULTS = {
 let counter = 0;
 export function nextId(): string {
   return `a${Date.now().toString(36)}${(counter++).toString(36)}`;
+}
+
+/** Return a new annotation shifted by (dx, dy); never mutates the input. */
+export function translateAnnotation(a: Annotation, dx: number, dy: number): Annotation {
+  switch (a.kind) {
+    case "arrow":
+      return {
+        ...a,
+        from: { x: a.from.x + dx, y: a.from.y + dy },
+        to: { x: a.to.x + dx, y: a.to.y + dy },
+      };
+    case "rect":
+      return {
+        ...a,
+        a: { x: a.a.x + dx, y: a.a.y + dy },
+        b: { x: a.b.x + dx, y: a.b.y + dy },
+      };
+    case "text":
+      return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+  }
 }

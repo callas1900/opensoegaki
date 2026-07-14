@@ -8,17 +8,18 @@ import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { Editor } from "./editor/canvas";
 import { exportPng } from "./editor/exporter";
-import { PALETTE, type ToolKind } from "./editor/model";
+import { PALETTE, type Tool } from "./editor/model";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
 const editor = new Editor(canvas);
+editor.setTool(editor.tool); // apply initial cursor feedback for the default tool
 
 // ---- toolbar ---------------------------------------------------------------
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
   btn.addEventListener("click", () => {
-    editor.tool = btn.dataset.tool as ToolKind;
+    editor.setTool(btn.dataset.tool as Tool);
     document.querySelector("button.tool.active")?.classList.remove("active");
     btn.classList.add("active");
   });
@@ -42,6 +43,12 @@ document.querySelector("#redo")!.addEventListener("click", () => editor.redo());
 
 // ---- keyboard --------------------------------------------------------------
 
+/** True when a key event's target is a text-input control that should keep its own keys. */
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z") {
@@ -50,6 +57,14 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && e.key.toLowerCase() === "c") {
     e.preventDefault();
     void copyToClipboard();
+  } else if (!isTypingTarget(e.target)) {
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault(); // stray Backspace must never trigger browser history-back
+      editor.deleteSelected();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      editor.clearSelection();
+    }
   }
 });
 

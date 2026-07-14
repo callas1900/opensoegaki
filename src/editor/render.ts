@@ -6,6 +6,11 @@ import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation } from
 
 const OUTLINE = "rgba(255,255,255,0.9)";
 
+export const FONT_STACK = "system-ui, sans-serif";
+export function fontString(fontSize: number): string {
+  return `bold ${fontSize}px ${FONT_STACK}`;
+}
+
 export function renderAnnotations(ctx: CanvasRenderingContext2D, list: Annotation[]): void {
   for (const a of list) {
     switch (a.kind) {
@@ -65,7 +70,7 @@ function drawRect(ctx: CanvasRenderingContext2D, a: RectAnnotation): void {
 }
 
 function drawText(ctx: CanvasRenderingContext2D, a: TextAnnotation): void {
-  ctx.font = `bold ${a.fontSize}px system-ui, sans-serif`;
+  ctx.font = fontString(a.fontSize);
   ctx.textBaseline = "top";
   ctx.lineJoin = "round";
   ctx.strokeStyle = OUTLINE;
