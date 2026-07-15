@@ -43,6 +43,59 @@ never `structuredClone`d into a history snapshot, and never passed through
 `renderAnnotations` — so it cannot be undone/redone as data and cannot leak into
 an exported PNG.
 
+## Crop
+
+The crop tool is a **destructive, re-rasterizing** operation, not a stored
+crop rectangle: on apply, the editor re-rasterizes the background to the
+selected region (`createImageBitmap(oldBitmap, x, y, w, h)`) and translates
+every annotation by the crop origin (`translateAnnotation`, reused unchanged
+from the select/move feature). This is a single `history.push(snapshot())` —
+the same `{ imageBitmap, annotations }` mechanism already used for background
+replacement — so one `Ctrl+Z` undoes both the bitmap and the annotation
+positions, and `Ctrl+Shift+Z` redoes it, with no new history machinery.
+Annotations outside the cropped region are **kept, translated (possibly to
+off-canvas coordinates), never clipped or deleted** — clipping would mutate
+annotation geometry and deleting would lose data; translate-and-keep is fully
+reversible via undo and consistent with the select tool already allowing
+annotations to be dragged partly off-canvas. `src/editor/crop.ts` holds the
+pure `computeCrop` geometry (apply-time no-op/min-size guard and integer
+normalizer) plus the handle geometry (`fullImageRect`, `handleAt`,
+`applyHandleDrag`), and is deliberately not imported by `exporter.ts`.
+
+The crop **region starts as the full loaded image** with a draggable corner
+handle (`nw`/`ne`/`sw`/`se`) at each vertex. Dragging a corner shrinks or
+expands that corner while the diagonally-opposite corner stays pinned,
+clamped to the image bounds and to `MIN_CROP_PX` in each dimension (never
+flipping past the pinned corner). Dragging inside the region (not on a
+handle) is inert — the app deliberately does not support whole-region
+translation in the MVP. An on-canvas **✓ Apply / ✗ Cancel** overlay (a small
+floating `div.crop-controls`, positioned near the region's bottom-right
+corner, offset clear of the SE handle so it never steals the handle's
+clicks) commits or resets the crop with the mouse alone; `Enter`/`Esc`
+remain as optional keyboard accelerators for the same two actions.
+
+**Invariant: while the crop tool is active and an image is loaded, a region
+with handles and ✓/✗ controls is always visible** (v2.1, 2026-07-16 —
+revised from user E2E feedback on the v2 mouse-only-apply UI). Neither
+cancel nor apply tears crop mode down:
+- **✗ / `Esc`** resets the region to the full image (`cancelCrop()` sets
+  `crop.rect = fullImageRect(...)`) — crop mode stays active with fresh
+  handles, ready for another attempt. The document is never touched.
+- **✓ / `Enter`** on a shrunk region applies the crop (single undoable step,
+  as above) and then re-arms the region to the *new* cropped image's full
+  extent, so the user can immediately crop again. On an unshrunk full-image
+  region (or a below-`MIN_CROP_PX` region), it is the existing no-op guard:
+  no document change, no history push, and the region simply stays as-is.
+
+Because the region always starts (and resets to) full-image,
+`hasPendingCrop()` is true for the entire time the crop tool is active.
+Crop UI teardown (removing the ✓/✗ controls and clearing crop state) now
+happens **only** when the user switches to a different tool, or a new
+document replaces the current one (new paste/capture, or undo/redo) — each
+of those immediately re-initializes a fresh full-image region if the crop
+tool is still the active tool, so switching *away* from and back to crop, or
+undoing/redoing while cropping, never leaves a dead toolbar state.
+
 ## Selection & hit-testing
 
 `src/editor/hittest.ts` is pure, format-agnostic geometry (`boundsOf`, `hitTest`)
@@ -77,7 +130,10 @@ Keep this table current — the `reviewer` agent checks IPC contract drift.
 The selection tool (hit-test/move/delete) is a pure `src/` feature and introduces
 no IPC changes; the table above is unaffected. The inline text editor (below)
 is likewise pure `src/`; `save_png` is the only IPC addition on top of the
-original two commands.
+original two commands. The crop tool (below) is also pure `src/` and
+introduces no IPC changes — including its v2 handle-based/mouse-only-apply
+revision, which is pure `src/` UI/interaction rework with no Rust or IPC
+surface touched.
 
 ## Keyboard shortcuts
 
@@ -87,15 +143,26 @@ original two commands.
 | `Ctrl+Shift+Z` / `Cmd+Shift+Z` | Redo |
 | `Ctrl+C` / `Cmd+C` | Copy exported PNG to clipboard |
 | `Del` / `Backspace` | Delete the selected annotation (undoable) |
-| `Esc` | Deselect |
+| `Esc` | Reset the crop region to the full image while cropping, else deselect |
+| `Enter` | Apply the crop region (no-op on an unshrunk full-image region) |
 | `Ctrl+S` / `Cmd+S` | Save annotated PNG via native dialog |
 
-`Del`/`Backspace`/`Esc`/`Ctrl+S` are gated by an `isTypingTarget` guard in
-`main.ts` so a global handler never eats keys destined for a text field. While
-the inline text editor (below) is focused, this guard suppresses **all**
+`Esc`/`Enter` are strictly optional **accelerators** for the crop tool's
+on-canvas ✗/✓ controls — the mouse alone is always sufficient to reset or
+apply a crop. Neither ever exits crop mode: `Esc`/✗ resets the region to the
+full image and `Enter`/✓ (after a real apply) re-arms the region to the
+newly-cropped image's full extent, so a region with handles is always
+visible while the crop tool is active (see "Crop" above).
+
+`Del`/`Backspace`/`Esc`/`Enter`/`Ctrl+S` are gated by an `isTypingTarget` guard
+in `main.ts` so a global handler never eats keys destined for a text field.
+While the inline text editor (below) is focused, this guard suppresses **all**
 global shortcuts: `Ctrl+Z`/`Ctrl+C`/`Delete`/`Backspace` fall through to the
-input's native undo/copy/edit behavior, and `Ctrl+S` is inert; `Esc` is instead
-handled by the editor's own `keydown` listener, which cancels the edit.
+input's native undo/copy/edit behavior, and `Ctrl+S` is inert; `Esc`/`Enter`
+are instead handled by the editor's own `keydown` listener, which
+cancels/commits the edit. `Esc` checks `editor.cancelCrop()` first — which,
+in crop mode, always returns `true` (a reset, never a no-op) — and only
+falls through to `clearSelection()` when the crop tool isn't active.
 
 ## Capture flow
 
@@ -116,8 +183,10 @@ toolbar button covers full-screen capture as a secondary path.
    the window again, and returns a base64 PNG — restoring the window even if capture
    fails. The frontend decodes the result and loads it the same way as a pasted image.
 
-**Known gap (MVP):** the Capture button always captures the full screen; a
-click-and-drag crop overlay (`src/capture/`) is a possible future addition.
+**Known gap (MVP):** the Capture button always captures the full screen;
+capture-time region selection stays delegated to the OS (Win+Shift+S, then
+paste). The editor's own **crop tool** (below) trims the loaded document
+after the fact instead.
 
 ## Toolbar
 
@@ -136,6 +205,25 @@ produces exactly one undoable `TextAnnotation`.
 
 An **S/M/L size control** next to the palette picks the stroke width (arrow/rect)
 and font size (text) used for *new* annotations; it never restyles existing ones.
+
+The **Crop** tool initializes the region to the full loaded image with
+draggable corner handles; the user shrinks it by dragging a corner (opposite
+corner pinned, clamped to image bounds and `MIN_CROP_PX`). A floating
+on-canvas **✓ Apply / ✗ Reset** control group, positioned near the region's
+bottom-right corner over the canvas (offset clear of the SE handle), applies
+or resets the crop with the mouse alone (see "Crop" above for what applying
+does to the document, and for the always-visible-region invariant); `Enter`/
+`Esc` remain as optional accelerators for the same actions, and neither ever
+leaves crop mode — resetting or re-arming the region, never tearing down the
+handles/controls. While the crop tool is active, live chrome dims the four
+exterior regions, draws a dashed white+accent border around the region, and
+draws a small filled square handle at each corner — all drawn directly on
+the canvas context in `Editor.render()`, after selection chrome, so none of
+it is ever rasterized into an export. The toolbar's crop button uses an
+inline SVG crop-mark icon (`stroke="currentColor"`) rather than a text
+glyph, for legibility on both the panel background and the button's active
+accent state; it is the only toolbar button using SVG today — the rest
+remain Unicode glyphs.
 
 ## Share flow (drag-out)
 

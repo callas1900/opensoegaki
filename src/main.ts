@@ -22,6 +22,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
     editor.setTool(btn.dataset.tool as Tool);
     document.querySelector("button.tool.active")?.classList.remove("active");
     btn.classList.add("active");
+    btn.blur(); // so pressing Enter next doesn't re-activate this button
   });
 }
 
@@ -79,7 +80,12 @@ window.addEventListener("keydown", (e) => {
     editor.deleteSelected();
   } else if (e.key === "Escape") {
     e.preventDefault();
-    editor.clearSelection();
+    if (!editor.cancelCrop()) editor.clearSelection();
+  } else if (e.key === "Enter") {
+    if (editor.hasPendingCrop()) {
+      e.preventDefault();
+      void editor.applyCrop();
+    }
   }
 });
 

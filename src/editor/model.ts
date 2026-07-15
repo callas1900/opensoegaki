@@ -7,7 +7,7 @@
 export type Point = { x: number; y: number };
 
 export type ToolKind = "arrow" | "rect" | "text";
-export type Tool = ToolKind | "select";
+export type Tool = ToolKind | "select" | "crop";
 
 interface AnnotationBase {
   id: string;

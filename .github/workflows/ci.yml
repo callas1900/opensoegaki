@@ -19,6 +19,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm test
 
   rust:
     runs-on: windows-latest # primary target platform
@@ -35,4 +36,7 @@ jobs:
         working-directory: src-tauri
       - name: clippy
         run: cargo clippy -- -D warnings
+        working-directory: src-tauri
+      - name: test
+        run: cargo test
         working-directory: src-tauri
