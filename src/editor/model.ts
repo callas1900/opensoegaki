@@ -43,7 +43,7 @@ export interface Doc {
   annotations: Annotation[];
 }
 
-export const PALETTE = ["#e8465a", "#2f7de1", "#2fae5f", "#f5a623", "#222222", "#ffffff"] as const;
+export const PALETTE = ["#ED107B", "#FBB034", "#313187", "#00AFA5", "#00C0F3", "#434345", "#FFFFFF", "#000000"] as const;
 
 export const DEFAULTS = {
   color: PALETTE[0] as string,
