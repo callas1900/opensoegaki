@@ -1,10 +1,10 @@
-# OpenScrawl
+# OpenSoegaki
 
-**Capture. Scrawl. Share.** — A fast, lightweight, open-source screenshot annotation tool.
+**Capture. Annotate. Share.** — A fast, lightweight, open-source screenshot annotation tool.
 
-OpenScrawl is a spiritual successor to the discontinued Skitch for Windows. It lives in
+OpenSoegaki is a spiritual successor to the discontinued Skitch for Windows. It lives in
 your system tray; shoot a screenshot with the OS tool (Win+Shift+S) and paste it in with
-Ctrl+V to scrawl arrows, boxes and text on it, then hand the result to any other app with
+Ctrl+V to annotate it with arrows, boxes and text, then hand the result to any other app with
 a single drag.
 
 > **Status:** 🚧 Early development (MVP). Windows 11 first; macOS support is planned.
@@ -20,7 +20,7 @@ a single drag.
 
 ## Why Tauri?
 
-OpenScrawl is built with [Tauri 2](https://tauri.app) (Rust core + TypeScript/Canvas UI):
+OpenSoegaki is built with [Tauri 2](https://tauri.app) (Rust core + TypeScript/Canvas UI):
 
 - ~10 MB installer and low idle memory — right-sized for an always-resident tray utility
 - Screen capture handled natively in Rust via [`xcap`](https://crates.io/crates/xcap)
@@ -68,9 +68,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design overview and
 
 ## Non-affiliation notice
 
-OpenScrawl is an independent open-source project. It is **not** affiliated with,
+OpenSoegaki is an independent open-source project. It is **not** affiliated with,
 endorsed by, or connected to Evernote, Bending Spoons, or the Skitch product.
-"Skitch" is a trademark of its respective owner; OpenScrawl re-implements a similar
+"Skitch" is a trademark of its respective owner; OpenSoegaki re-implements a similar
 workflow with an original name, design, and codebase.
 
 ## License

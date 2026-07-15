@@ -1,4 +1,4 @@
-//! OpenScrawl core: tray residency, capture commands, drag-out.
+//! OpenSoegaki core: tray residency, capture commands, drag-out.
 
 mod capture;
 
@@ -52,13 +52,13 @@ fn prepare_drag_file(app: AppHandle, png: Vec<u8>) -> Result<String, String> {
         .path()
         .temp_dir()
         .map_err(|e| e.to_string())?
-        .join("openscrawl");
+        .join("opensoegaki");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis();
-    let path = dir.join(format!("scrawl-{ts}.png"));
+    let path = dir.join(format!("soegaki-{ts}.png"));
     std::fs::write(&path, png).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -96,13 +96,13 @@ pub fn run() {
         ])
         .setup(|app| {
             // Tray icon with a minimal menu; closing the window hides to tray.
-            let open = MenuItem::with_id(app, "open", "Open OpenScrawl", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open OpenSoegaki", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().expect("bundled icon").clone())
                 .menu(&menu)
-                .tooltip("OpenScrawl — paste a screenshot to annotate")
+                .tooltip("OpenSoegaki — paste a screenshot to annotate")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main_window(app),
                     "quit" => {
@@ -115,18 +115,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Hide instead of quitting: OpenScrawl is a tray-resident utility.
+            // Hide instead of quitting: OpenSoegaki is a tray-resident utility.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running OpenScrawl");
+        .expect("error while running OpenSoegaki");
 }
 
 fn cleanup_temp(app: &AppHandle) {
     if let Ok(dir) = app.path().temp_dir() {
-        let _ = std::fs::remove_dir_all(dir.join("openscrawl"));
+        let _ = std::fs::remove_dir_all(dir.join("opensoegaki"));
     }
 }

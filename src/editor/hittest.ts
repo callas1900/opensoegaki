@@ -1,6 +1,6 @@
 /**
  * Pure geometry: bounds and hit-testing over the annotation object model.
- * Format-agnostic (a future `.scrawl` loader or SVG exporter can reuse this),
+ * Format-agnostic (a future `.soegaki` loader or SVG exporter can reuse this),
  * and deliberately NOT imported by exporter.ts — that import boundary is the
  * mechanical guarantee that selection chrome cannot leak into rasterized output.
  */

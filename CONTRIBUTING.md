@@ -1,6 +1,6 @@
-# Contributing to OpenScrawl
+# Contributing to OpenSoegaki
 
-Thanks for your interest! OpenScrawl is young, so contributions of every size are welcome.
+Thanks for your interest! OpenSoegaki is young, so contributions of every size are welcome.
 
 ## Development setup
 

@@ -1,6 +1,6 @@
-# OpenScrawl — Claude Code project guide
+# OpenSoegaki — Claude Code project guide
 
-OpenScrawl is an open-source screenshot-annotation tool (Tauri 2: Rust core +
+OpenSoegaki is an open-source screenshot-annotation tool (Tauri 2: Rust core +
 TypeScript/Canvas UI), a spiritual successor to the discontinued Skitch for Windows.
 Primary target: Windows 11. macOS support is planned — never block it in a design.
 

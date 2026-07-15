@@ -1,11 +1,11 @@
-# OpenScrawl — Architecture
+# OpenSoegaki — Architecture
 
 ## Overview
 
-OpenScrawl is a tray-resident screenshot annotation tool built on Tauri 2.
+OpenSoegaki is a tray-resident screenshot annotation tool built on Tauri 2.
 
 ```
-┌─────────────────────────── OpenScrawl ───────────────────────────┐
+┌─────────────────────────── OpenSoegaki ───────────────────────────┐
 │                                                                  │
 │  Rust core (src-tauri/)              TypeScript UI (src/)        │
 │  ─────────────────────               ───────────────────         │
@@ -34,7 +34,7 @@ The live canvas (`canvas.ts`) and the exporter (`exporter.ts`) both render the s
 model through one pure function (`render.ts`). Benefits:
 
 - Undo/redo is a list snapshot, not a bitmap diff (`history.ts`)
-- Select/move/delete (below) and a re-editable ".scrawl" file format or SVG export
+- Select/move/delete (below) and a re-editable ".soegaki" file format or SVG export
   fall out naturally from the same object model
 
 Selection itself is **not** part of the document: `Editor.selectedId` is transient
@@ -46,7 +46,7 @@ an exported PNG.
 ## Selection & hit-testing
 
 `src/editor/hittest.ts` is pure, format-agnostic geometry (`boundsOf`, `hitTest`)
-over the annotation model — the same code a future `.scrawl` loader or SVG exporter
+over the annotation model — the same code a future `.soegaki` loader or SVG exporter
 could reuse. It is deliberately **never imported by `exporter.ts`**; that import
 boundary is the mechanical guarantee that selection chrome cannot be rasterized
 into exported/copied images. The selection marquee itself is drawn by a private
@@ -99,11 +99,11 @@ handled by the editor's own `keydown` listener, which cancels the edit.
 
 ## Capture flow
 
-OpenScrawl's primary input path is pasting a screenshot taken with the OS tool; a
+OpenSoegaki's primary input path is pasting a screenshot taken with the OS tool; a
 toolbar button covers full-screen capture as a secondary path.
 
 1. **Paste (primary).** The user shoots with the OS screenshot tool (Win+Shift+S;
-   Cmd+Shift+4 on macOS) and presses Ctrl+V / Cmd+V in OpenScrawl. The webview fires
+   Cmd+Shift+4 on macOS) and presses Ctrl+V / Cmd+V in OpenSoegaki. The webview fires
    a DOM `paste` event; `main.ts` reads the first `image/*` item off
    `ClipboardEvent.clipboardData`, hands the `Blob` to `editor.loadImageBlob`, which
    decodes it with `createImageBitmap` and resets the document. No Rust involvement
@@ -141,7 +141,7 @@ and font size (text) used for *new* annotations; it never restyles existing ones
 
 1. User drags the tab in the share bar.
 2. TS rasterizes the document (`exporter.ts`) and invokes `prepare_drag_file`.
-3. Rust writes `%TEMP%/openscrawl/scrawl-<ts>.png` and returns the path.
+3. Rust writes `%TEMP%/opensoegaki/soegaki-<ts>.png` and returns the path.
 4. `tauri-plugin-drag` starts a native OS drag with that file.
 5. Temp files are removed on app exit.
 
@@ -157,7 +157,7 @@ dependency and permission surface minimal: no new capability entry is needed.
 
 ## Privacy stance
 
-Screenshots are sensitive. OpenScrawl performs **no network I/O** and must stay that
+Screenshots are sensitive. OpenSoegaki performs **no network I/O** and must stay that
 way unless a feature is explicit, opt-in, and reviewed. `save_png` writes only to
 a user-chosen local path via the native dialog; it never transmits data.
 

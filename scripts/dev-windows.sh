@@ -6,7 +6,7 @@ set -euo pipefail
 
 powershell.exe -NoProfile -Command '
   $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-  Set-Location C:\Users\calla\Documents\openscrawl
+  Set-Location C:\Users\calla\Documents\opensoegaki
   pnpm tauri dev
   exit $LASTEXITCODE
 '

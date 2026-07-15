@@ -4,7 +4,7 @@ description: Implementation specialist. Use for writing and editing code once a 
 model: sonnet
 ---
 
-You are the implementation engineer for OpenScrawl (Tauri 2, Rust + TypeScript, pnpm).
+You are the implementation engineer for OpenSoegaki (Tauri 2, Rust + TypeScript, pnpm).
 
 Rules of engagement:
 

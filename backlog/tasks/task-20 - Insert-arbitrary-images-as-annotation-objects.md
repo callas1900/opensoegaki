@@ -4,6 +4,7 @@ title: Insert arbitrary images as annotation objects
 status: To Do
 assignee: []
 created_date: '2026-07-14 08:36'
+updated_date: '2026-07-15 03:31'
 labels:
   - feature
 dependencies:
@@ -15,7 +16,7 @@ ordinal: 20000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Overlay arbitrary images on top of the captured screenshot as first-class annotation objects (new 'image' kind in src/editor/model.ts alongside arrow/rect/text), rendered on canvas and rasterized only at export. Intake paths: (1) toolbar insert-image button via native file dialog, (2) drag & drop of an image file onto the editor, (3) clipboard paste. Paste is split by modifier: Ctrl+V keeps background-replace semantics (TASK-17); Ctrl+Shift+V inserts as annotation. Scope is insertion + rendering + export only — move/resize/delete of placed images is TASK-8 (selection tool) territory. Design must go through architect before implementation (image data storage in the Doc, memory footprint, .scrawl serialization impact per TASK-16).
+Overlay arbitrary images on top of the captured screenshot as first-class annotation objects (new 'image' kind in src/editor/model.ts alongside arrow/rect/text), rendered on canvas and rasterized only at export. Intake paths: (1) toolbar insert-image button via native file dialog, (2) drag & drop of an image file onto the editor, (3) clipboard paste. Paste is split by modifier: Ctrl+V keeps background-replace semantics (TASK-17); Ctrl+Shift+V inserts as annotation. Scope is insertion + rendering + export only — move/resize/delete of placed images is TASK-8 (selection tool) territory. Design must go through architect before implementation (image data storage in the Doc, memory footprint, .soegaki serialization impact per TASK-16).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

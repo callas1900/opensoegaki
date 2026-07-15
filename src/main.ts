@@ -153,7 +153,7 @@ async function savePng(): Promise<void> {
     const png = await exportPng(editor.doc);
     await invoke<string | null>("save_png", {
       png: Array.from(png),
-      defaultName: `scrawl-${timestamp()}.png`,
+      defaultName: `soegaki-${timestamp()}.png`,
     });
   } catch (err) {
     console.error("save failed:", err);
