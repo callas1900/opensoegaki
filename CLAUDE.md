@@ -25,6 +25,23 @@ Rules:
 4. If `implementer` reports a design-level problem, route it back to `architect` —
    do not let Sonnet improvise the design, and do not silently fix it in the main session.
 
+## Acceptance criteria are regression contracts
+
+The acceptance criteria of every **Done** backlog task are living regression
+contracts: no later change may silently break them.
+
+1. **Every review includes an AC regression pass.** Enumerate Done tasks
+   (`backlog task list --plain`), read their ACs (`backlog task view <id> --plain`),
+   and verify the diff breaks none of them. A broken past AC is a blocking finding.
+2. **Conflicts are proposed, never absorbed.** If new work genuinely conflicts with a
+   past AC, do not pick a side silently — present the conflict to the user as a
+   proposal (options + recommendation), let them decide, and record the decision in
+   the affected task(s).
+3. **Done means verified.** A task may be marked Done only after its ACs have been
+   exercised in the running app (`pnpm tauri dev` on Windows) or by automated tests.
+   Typecheck, compile, and code-trace review are *not* AC verification; until the ACs
+   are exercised, the task stays In Progress.
+
 ## Hard conventions
 
 - Package manager: **pnpm only** (no npm, no yarn; do not create package-lock.json).

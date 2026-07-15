@@ -63,6 +63,27 @@ fn prepare_drag_file(app: AppHandle, png: Vec<u8>) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Show a native save dialog pre-filled with `default_name`, then write the
+/// PNG bytes to the chosen path. Returns the saved path, or `None` if the
+/// user cancelled the dialog. Runs the dialog on Tauri's async runtime
+/// (never a blocking dialog on the main thread), which is required for
+/// correctness on macOS and harmless on Windows.
+#[tauri::command]
+async fn save_png(png: Vec<u8>, default_name: String) -> Result<Option<String>, String> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_file_name(&default_name)
+        .add_filter("PNG image", &["png"])
+        .save_file()
+        .await;
+    match file {
+        Some(file) => {
+            std::fs::write(file.path(), &png).map_err(|e| e.to_string())?;
+            Ok(Some(file.path().to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -70,7 +91,8 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .invoke_handler(tauri::generate_handler![
             prepare_drag_file,
-            capture_fullscreen
+            capture_fullscreen,
+            save_png
         ])
         .setup(|app| {
             // Tray icon with a minimal menu; closing the window hides to tray.

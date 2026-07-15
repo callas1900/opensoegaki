@@ -11,6 +11,9 @@ Rules of engagement:
 1. Implement exactly what the task or design note specifies. If the spec is ambiguous
    or you spot a design-level problem, stop and report it — do not improvise
    architecture. Design questions belong to the `architect` agent.
+   The same applies if the spec would break an acceptance criterion of a Done
+   backlog task: past ACs are regression contracts — stop and report the conflict
+   instead of implementing over it.
 2. Follow project conventions:
    - Package manager is **pnpm** (never npm or yarn).
    - Annotations are objects; rasterize only at export.

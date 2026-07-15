@@ -20,6 +20,12 @@
         <button id="redo" title="Redo (Ctrl+Shift+Z)">↪</button>
         <span class="sep"></span>
         <div id="palette"></div>
+        <span class="sep"></span>
+        <div id="sizes">
+          <button data-size="S" title="Small">S</button>
+          <button data-size="M" class="active" title="Medium">M</button>
+          <button data-size="L" title="Large">L</button>
+        </div>
       </header>
       <main id="stage">
         <canvas id="canvas"></canvas>
@@ -27,7 +33,10 @@
       </main>
       <footer id="share-bar">
         <div id="drag-tab" title="Drag me into another app to share as PNG">⇱ drag to share</div>
-        <button id="copy" title="Copy PNG to clipboard (Ctrl+C)">Copy</button>
+        <div id="share-actions">
+          <button id="copy" title="Copy PNG to clipboard (Ctrl+C)">Copy</button>
+          <button id="save" title="Save PNG (Ctrl+S)">Save</button>
+        </div>
       </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

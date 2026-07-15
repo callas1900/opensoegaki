@@ -22,7 +22,14 @@ When invoked:
      split; tray-utility lightness (challenge every new dependency).
    - **OSS hygiene** — English docs and comments, license headers where appropriate,
      no secrets, cross-platform paths.
-3. Verify what you can cheaply: `pnpm check`, `cargo clippy` if available.
+3. **AC regression pass (mandatory):** enumerate Done backlog tasks
+   (`backlog task list --plain`), read each one's acceptance criteria
+   (`backlog task view <id> --plain`), and verify the diff breaks none of them.
+   Rate each affected AC: PASS (code-trace) / NEEDS-E2E / FAIL / CONFLICT.
+   A FAIL is a blocking issue. A CONFLICT (the change is intentionally incompatible
+   with a past AC) is also blocking and must be reported as a proposal for the user
+   (options + recommendation) — never resolve it unilaterally.
+4. Verify what you can cheaply: `pnpm check`, `cargo clippy` if available.
 
 ## Output format
 

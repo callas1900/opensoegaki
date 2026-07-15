@@ -8,7 +8,7 @@ import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { Editor } from "./editor/canvas";
 import { exportPng } from "./editor/exporter";
-import { PALETTE, type Tool } from "./editor/model";
+import { PALETTE, type SizeName, type Tool } from "./editor/model";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
@@ -38,6 +38,15 @@ for (const color of PALETTE) {
   palette.appendChild(swatch);
 }
 
+const sizes = document.querySelector<HTMLDivElement>("#sizes")!;
+for (const btn of sizes.querySelectorAll<HTMLButtonElement>("button[data-size]")) {
+  btn.addEventListener("click", () => {
+    editor.setSize(btn.dataset.size as SizeName);
+    sizes.querySelector(".active")?.classList.remove("active");
+    btn.classList.add("active");
+  });
+}
+
 document.querySelector("#undo")!.addEventListener("click", () => editor.undo());
 document.querySelector("#redo")!.addEventListener("click", () => editor.redo());
 
@@ -50,6 +59,11 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 window.addEventListener("keydown", (e) => {
+  // While the inline text editor (or any other text input) is focused, all
+  // global shortcuts are suppressed so native undo/copy/edit keys reach it
+  // instead; Escape is handled by the editor's own keydown listener.
+  if (isTypingTarget(e.target)) return;
+
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z") {
     e.preventDefault();
@@ -57,14 +71,15 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && e.key.toLowerCase() === "c") {
     e.preventDefault();
     void copyToClipboard();
-  } else if (!isTypingTarget(e.target)) {
-    if (e.key === "Delete" || e.key === "Backspace") {
-      e.preventDefault(); // stray Backspace must never trigger browser history-back
-      editor.deleteSelected();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      editor.clearSelection();
-    }
+  } else if (mod && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    void savePng();
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault(); // stray Backspace must never trigger browser history-back
+    editor.deleteSelected();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    editor.clearSelection();
   }
 });
 
@@ -76,13 +91,16 @@ function showLoadedState(): void {
 }
 
 // Paste is the primary capture path: the user shoots with the OS tool
-// (Win+Shift+S / Cmd+Shift+4) and pastes the result with Ctrl/Cmd+V.
+// (Win+Shift+S / Cmd+Shift+4) and pastes the result with Ctrl/Cmd+V. Scan for
+// an image item before deciding: only an image paste is intercepted (and
+// replaces the background, discarding any pending inline text edit); a paste
+// with no image is left alone so a focused input's native text paste works.
 window.addEventListener("paste", (e) => {
-  e.preventDefault();
   const items = e.clipboardData?.items;
   if (!items) return;
   for (const item of items) {
     if (item.type.startsWith("image/")) {
+      e.preventDefault();
       const blob = item.getAsFile();
       if (blob) {
         void editor
@@ -119,9 +137,34 @@ async function copyToClipboard(): Promise<void> {
 }
 document.querySelector("#copy")!.addEventListener("click", () => void copyToClipboard());
 
+/** `YYYYMMDD-HHMMSS` from the local time, used to build a default save filename. */
+function timestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+async function savePng(): Promise<void> {
+  if (!editor.hasImage()) return;
+  try {
+    const png = await exportPng(editor.doc);
+    await invoke<string | null>("save_png", {
+      png: Array.from(png),
+      defaultName: `scrawl-${timestamp()}.png`,
+    });
+  } catch (err) {
+    console.error("save failed:", err);
+  }
+}
+document.querySelector("#save")!.addEventListener("click", () => void savePng());
+
 // Skitch-style drag-out: write a temp PNG in Rust, then hand the OS a file drag.
 const dragTab = document.querySelector<HTMLDivElement>("#drag-tab")!;
 dragTab.addEventListener("mousedown", async () => {
+  editor.commitPendingText(); // export runs before native blur-commit would land
   if (!editor.hasImage()) return;
   try {
     const png = await exportPng(editor.doc);

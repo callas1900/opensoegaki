@@ -51,6 +51,11 @@ export const DEFAULTS = {
   fontSize: 28,
 };
 
+export type SizeName = "S" | "M" | "L";
+
+export const STROKE_PRESETS: Record<SizeName, number> = { S: 3, M: 6, L: 12 };
+export const FONT_PRESETS: Record<SizeName, number> = { S: 18, M: 28, L: 44 };
+
 let counter = 0;
 export function nextId(): string {
   return `a${Date.now().toString(36)}${(counter++).toString(36)}`;

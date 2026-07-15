@@ -70,11 +70,14 @@ Hit-testing rules:
 | --- | --- | --- | --- |
 | TS → Rust (command) | `capture_fullscreen` | none → returns base64 PNG string | Hide window, capture primary monitor, show window, return the shot |
 | TS → Rust (command) | `prepare_drag_file` | `png: number[]` → returns temp file path | Materialize export for OS drag |
+| TS → Rust (command) | `save_png` | `{ png: number[], defaultName: string }` → `string \| null` | Show native save dialog, write PNG; returns saved path, or `null` if the user cancelled |
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
 
 The selection tool (hit-test/move/delete) is a pure `src/` feature and introduces
-no IPC changes; the table above is unaffected.
+no IPC changes; the table above is unaffected. The inline text editor (below)
+is likewise pure `src/`; `save_png` is the only IPC addition on top of the
+original two commands.
 
 ## Keyboard shortcuts
 
@@ -85,10 +88,14 @@ no IPC changes; the table above is unaffected.
 | `Ctrl+C` / `Cmd+C` | Copy exported PNG to clipboard |
 | `Del` / `Backspace` | Delete the selected annotation (undoable) |
 | `Esc` | Deselect |
+| `Ctrl+S` / `Cmd+S` | Save annotated PNG via native dialog |
 
-`Del`/`Backspace`/`Esc` are gated by an `isTypingTarget` guard in `main.ts` so a
-global handler never eats keys destined for a text field (e.g. a future inline
-text editor).
+`Del`/`Backspace`/`Esc`/`Ctrl+S` are gated by an `isTypingTarget` guard in
+`main.ts` so a global handler never eats keys destined for a text field. While
+the inline text editor (below) is focused, this guard suppresses **all**
+global shortcuts: `Ctrl+Z`/`Ctrl+C`/`Delete`/`Backspace` fall through to the
+input's native undo/copy/edit behavior, and `Ctrl+S` is inert; `Esc` is instead
+handled by the editor's own `keydown` listener, which cancels the edit.
 
 ## Capture flow
 
@@ -120,6 +127,16 @@ marquee and allows drag-to-move or `Del`/`Backspace` to remove it (see
 "Selection & hit-testing" above); switching tools, `Esc`, or clicking empty canvas
 clears the selection. New annotations are not auto-selected after drawing.
 
+The **Text** tool opens an in-canvas `<input>` overlay at the click point instead
+of the former blocking `window.prompt`. The overlay is DOM-only — appended to
+`#stage`, never passed through `renderAnnotations` — so it renders and positions
+like the committed text but can never be rasterized into an export. It is
+single-line (Enter commits, Esc cancels, blur commits); a non-blank commit
+produces exactly one undoable `TextAnnotation`.
+
+An **S/M/L size control** next to the palette picks the stroke width (arrow/rect)
+and font size (text) used for *new* annotations; it never restyles existing ones.
+
 ## Share flow (drag-out)
 
 1. User drags the tab in the share bar.
@@ -128,10 +145,21 @@ clears the selection. New annotations are not auto-selected after drawing.
 4. `tauri-plugin-drag` starts a native OS drag with that file.
 5. Temp files are removed on app exit.
 
+## Save flow
+
+Ctrl+S / Cmd+S or the toolbar **Save** button exports the document
+(`exporter.ts`) and invokes `save_png`. Rust shows an `rfd::AsyncFileDialog`
+(main-thread-safe on macOS, threaded on Windows) and writes the chosen path.
+Cancel returns `null` — a no-op; a write error is surfaced via `console.error`,
+matching the existing copy/drag sinks. `save_png` is a single custom command
+over `rfd` rather than `tauri-plugin-dialog`, a deliberate choice to keep the
+dependency and permission surface minimal: no new capability entry is needed.
+
 ## Privacy stance
 
 Screenshots are sensitive. OpenScrawl performs **no network I/O** and must stay that
-way unless a feature is explicit, opt-in, and reviewed.
+way unless a feature is explicit, opt-in, and reviewed. `save_png` writes only to
+a user-chosen local path via the native dialog; it never transmits data.
 
 ## Platform roadmap
 

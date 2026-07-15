@@ -6,13 +6,16 @@ import {
   type Annotation,
   type Doc,
   type Point,
+  type SizeName,
   type Tool,
   DEFAULTS,
+  FONT_PRESETS,
   PALETTE,
+  STROKE_PRESETS,
   nextId,
   translateAnnotation,
 } from "./model";
-import { renderAnnotations } from "./render";
+import { fontString, renderAnnotations } from "./render";
 import { History, type DocSnapshot } from "./history";
 import { boundsOf, hitTest } from "./hittest";
 
@@ -34,6 +37,14 @@ export class Editor {
   // (never incrementally), avoiding drift.
   private move: { original: Annotation; anchor: Point; moved: boolean } | null = null;
   private readonly ctx: CanvasRenderingContext2D;
+  // Transient DOM overlay for the text tool; never part of doc, history, or renderAnnotations.
+  private textEdit: {
+    input: HTMLInputElement;
+    at: Point;
+    color: string;
+    fontSize: number;
+    reposition: () => void;
+  } | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -61,6 +72,8 @@ export class Editor {
    * history is cleared instead.
    */
   private setBackground(bitmap: ImageBitmap): void {
+    // The pending text belongs to the old image; discard rather than commit onto the new one.
+    this.cancelTextEditor();
     if (this.doc.imageBitmap !== null) {
       this.history.push(this.snapshot());
     } else {
@@ -93,6 +106,7 @@ export class Editor {
 
   /** Apply a restored snapshot, resizing the canvas to match its background before rendering. */
   private restore(snapshot: DocSnapshot): void {
+    this.cancelTextEditor();
     this.doc.imageBitmap = snapshot.imageBitmap;
     this.doc.annotations = snapshot.annotations;
     // The restored array may not contain the previously selected id, and even
@@ -133,6 +147,17 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.render();
+  }
+
+  /** Set the stroke width / font size used by newly drawn annotations. */
+  setSize(name: SizeName): void {
+    this.strokeWidth = STROKE_PRESETS[name];
+    this.fontSize = FONT_PRESETS[name];
+  }
+
+  /** Export sinks call this to materialize any in-flight inline text before reading `doc`. */
+  commitPendingText(): void {
+    this.commitTextEditor();
   }
 
   deleteSelected(): void {
@@ -195,8 +220,21 @@ export class Editor {
 
   private onDown(p: Point, e: PointerEvent): void {
     if (!this.hasImage()) return;
-    this.canvas.setPointerCapture(e.pointerId);
     const tool = this.tool;
+
+    if (tool === "text") {
+      // No pointer capture: text editing hands input focus to the DOM overlay.
+      // preventDefault() is load-bearing: canceling pointerdown suppresses the
+      // compatibility mousedown's default action, which would otherwise move
+      // focus to the (non-focusable) canvas -> body right after we focus the
+      // input, firing blur -> commitTextEditor() -> the editor self-destructs
+      // with an empty value before the user can type anything.
+      e.preventDefault();
+      this.openTextEditor(p);
+      return;
+    }
+
+    this.canvas.setPointerCapture(e.pointerId);
 
     if (tool === "select") {
       const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
@@ -217,11 +255,6 @@ export class Editor {
       this.draft = { ...base, kind: "arrow", from: p, to: p };
     } else if (tool === "rect") {
       this.draft = { ...base, kind: "rect", a: p, b: p };
-    } else {
-      const text = window.prompt("Text:");
-      if (text) {
-        this.commit({ ...base, kind: "text", at: p, text, fontSize: this.fontSize });
-      }
     }
     this.render();
   }
@@ -284,5 +317,77 @@ export class Editor {
   private commit(a: Annotation): void {
     this.history.push(this.snapshot());
     this.doc.annotations = [...this.doc.annotations, a];
+  }
+
+  // ---- inline text editing --------------------------------------------------
+  // A single DOM <input> overlay is the live preview for the text tool. It is
+  // transient DOM only: never part of doc, never in history, never rendered
+  // through renderAnnotations (so it can never be rasterized into an export).
+
+  private openTextEditor(at: Point): void {
+    this.commitTextEditor(); // idempotent: commit any already-open editor first
+
+    const input = document.createElement("input");
+    input.className = "text-editor";
+    const color = this.color;
+    const fontSize = this.fontSize;
+    const reposition = () => this.positionTextEditor();
+    this.textEdit = { input, at, color, fontSize, reposition };
+
+    this.positionTextEditor();
+    input.style.color = color;
+    this.canvas.parentElement!.appendChild(input);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitTextEditor();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        this.cancelTextEditor();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        // Defensive: prevent WebView2's native save-page accelerator from
+        // firing mid-edit. Ctrl+S stays inert while the text editor is open.
+        e.preventDefault();
+      }
+      e.stopPropagation();
+    });
+    input.addEventListener("blur", () => this.commitTextEditor());
+    window.addEventListener("resize", reposition);
+    input.focus();
+  }
+
+  /** Recompute the input's CSS-px position/font from the stored bitmap-px `at`. */
+  private positionTextEditor(): void {
+    if (!this.textEdit) return;
+    const { input, at, fontSize } = this.textEdit;
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const stageRect = this.canvas.parentElement!.getBoundingClientRect();
+    const scale = canvasRect.width / this.canvas.width;
+
+    input.style.left = `${canvasRect.left - stageRect.left + at.x * scale}px`;
+    input.style.top = `${canvasRect.top - stageRect.top + at.y * scale}px`;
+    input.style.font = fontString(fontSize * scale);
+  }
+
+  private commitTextEditor(): void {
+    if (!this.textEdit) return;
+    const { input, at, color, fontSize, reposition } = this.textEdit;
+    const text = input.value;
+    this.textEdit = null;
+    input.remove();
+    window.removeEventListener("resize", reposition);
+    if (text.trim() !== "") {
+      this.commit({ id: nextId(), color, strokeWidth: this.strokeWidth, kind: "text", at, text, fontSize });
+    }
+    this.render();
+  }
+
+  private cancelTextEditor(): void {
+    if (!this.textEdit) return;
+    const { input, reposition } = this.textEdit;
+    this.textEdit = null;
+    input.remove();
+    window.removeEventListener("resize", reposition);
+    this.render();
   }
 }
