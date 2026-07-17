@@ -2,7 +2,6 @@
 
 mod capture;
 
-use base64::Engine;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -22,14 +21,16 @@ fn show_main_window(app: &AppHandle) {
 }
 
 /// Hide the main window, let the compositor repaint without it, capture the
-/// primary monitor, then restore the window. Returns a base64 PNG.
+/// primary monitor, then restore the window. Returns the raw PNG bytes as an
+/// IPC `Response` (delivered to the frontend as an `ArrayBuffer`), avoiding a
+/// base64 encode/decode round-trip on the multi-megabyte payload.
 ///
 /// The window is always restored, even on capture failure, so the app never
 /// gets stuck hidden. The hide/sleep/capture/show sequence runs on a blocking
 /// task (window methods are thread-safe to call from there) so the sleep
 /// never occupies an async worker thread.
 #[tauri::command]
-async fn capture_fullscreen(app: AppHandle) -> Result<String, String> {
+async fn capture_fullscreen(app: AppHandle) -> Result<tauri::ipc::Response, String> {
     let png = tauri::async_runtime::spawn_blocking(move || {
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.hide();
@@ -46,7 +47,14 @@ async fn capture_fullscreen(app: AppHandle) -> Result<String, String> {
     .await
     .map_err(|e| e.to_string())??;
 
-    Ok(base64::engine::general_purpose::STANDARD.encode(png))
+    // Perf instrumentation only: pairs with the `[perf] capture ...` line
+    // capture.rs prints for the xcap/PNG legs. There is no encode leg left
+    // here (the raw bytes are handed straight to the IPC layer), so this
+    // just records the payload size that goes over the wire.
+    #[cfg(debug_assertions)]
+    eprintln!("[perf] capture ipc_bytes={}", png.len());
+
+    Ok(tauri::ipc::Response::new(png))
 }
 
 /// Write the exported PNG to a temp file so the OS drag can reference a path.

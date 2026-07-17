@@ -123,9 +123,26 @@ const captureBtn = document.querySelector<HTMLButtonElement>("#capture")!;
 captureBtn.addEventListener("click", async () => {
   captureBtn.disabled = true;
   try {
-    const b64 = await invoke<string>("capture_fullscreen");
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    await editor.loadImage(bytes);
+    const invokeStart = performance.now();
+    const buf = await invoke<ArrayBuffer>("capture_fullscreen");
+    const invokeMs = performance.now() - invokeStart;
+
+    const loadImageStart = performance.now();
+    await editor.loadImage(new Uint8Array(buf));
+    const loadImageMs = performance.now() - loadImageStart;
+
+    // Perf instrumentation only: dev builds log the client-side legs of the
+    // capture round-trip (IPC, bitmap decode) so they can be compared against
+    // the `[perf] capture ...` lines OpenSoegaki's Rust side prints for the
+    // same capture. The IPC response is raw bytes (no base64), so there is no
+    // separate decode leg here.
+    if (import.meta.env.DEV) {
+      console.log(
+        `[perf] capture invoke=${invokeMs.toFixed(0)}ms loadImage=${loadImageMs.toFixed(0)}ms ` +
+          `bytes=${buf.byteLength}`,
+      );
+    }
+
     showLoadedState();
   } catch (err) {
     console.error("capture failed:", err);
