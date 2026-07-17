@@ -4,7 +4,7 @@ title: 'Release pipeline: matrix build (Windows + macOS) in CI'
 status: In Progress
 assignee: []
 created_date: '2026-07-12 02:45'
-updated_date: '2026-07-17 16:23'
+updated_date: '2026-07-17 16:52'
 labels:
   - platform
 dependencies: []
@@ -39,4 +39,6 @@ Implemented 2026-07-18 (pending on-device verification before Done).
 - Reviewed by reviewer agent (2 passes): blocking release-race fixed, APPROVE. AC regression pass over Done tasks: no AC broken.
 
 Remaining for Done: push a v0.1.0 tag, confirm both runners produce artifacts (AC1/2/6), install+launch NSIS/MSI on Windows 11 (AC3).
+
+2026-07-18: First tag push (v0.1.0) failed — pnpm/action-setup@v4 in ci.yml/release.yml pinned 'version: 9', conflicting with package.json packageManager 'pnpm@9.15.0' (pre-existing bug: CI frontend job had been failing since 2026-07-15 for the same reason). Fixed by removing the version input from both workflows so the action resolves from packageManager. Draft-then-publish safety worked as designed: publish-release skipped, only a private draft was left. Needs re-tag of v0.1.0 after the fix commit.
 <!-- SECTION:NOTES:END -->
