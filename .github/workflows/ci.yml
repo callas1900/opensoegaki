@@ -40,3 +40,22 @@ jobs:
       - name: test
         run: cargo test
         working-directory: src-tauri
+
+  # Compile-coverage only for the cfg(target_os = "macos") branch in
+  # src-tauri/src/permission.rs (the `rust` job above runs windows-latest
+  # only, so that branch is otherwise never compiled until release time).
+  # cargo check doesn't need the frontend built: tauri-build only validates
+  # `frontendDist` when the `custom-protocol` feature is enabled (the
+  # production-bundle path via `tauri build`), which this project's `tauri`
+  # dependency does not enable.
+  rust-macos-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: check
+        run: cargo check
+        working-directory: src-tauri

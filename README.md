@@ -27,6 +27,18 @@ OpenSoegaki is built with [Tauri 2](https://tauri.app) (Rust core + TypeScript/C
 - The same codebase targets Windows, macOS and Linux, keeping the door open for the
   planned macOS release
 
+## Download & install
+
+Grab the latest bundle from [GitHub Releases](https://github.com/callas1900/opensoegaki/releases).
+
+Bundles are currently **unsigned**:
+
+- **Windows:** SmartScreen will warn about an unrecognized publisher. Click
+  "More info" → "Run anyway" to proceed.
+- **macOS:** Gatekeeper blocks the first launch. Right-click the app and choose
+  **Open**, or run `xattr -dr com.apple.quarantine /Applications/OpenSoegaki.app`
+  from a terminal. Note: the macOS build currently targets Apple Silicon (aarch64) only.
+
 ## Getting started (development)
 
 Prerequisites:
@@ -49,10 +61,19 @@ pnpm tauri build
 
 ## Default hotkeys
 
-| Action                  | Shortcut               |
-| ----------------------- | ---------------------- |
-| Paste screenshot        | `Ctrl+V`               |
-| Copy result to clipboard| `Ctrl+C` (in editor)   |
+OpenSoegaki registers no global (system-wide) hotkeys; all shortcuts below are
+in-app only, active while the OpenSoegaki window has focus.
+
+| Action                  | Windows/Linux           | macOS                   |
+| ----------------------- | ----------------------- | ----------------------- |
+| Paste screenshot        | `Ctrl+V`                | `Cmd+V`                 |
+| Copy result to clipboard| `Ctrl+C` (in editor)    | `Cmd+C` (in editor)     |
+| Save                    | `Ctrl+S`                | `Cmd+S`                 |
+| Undo / Redo             | `Ctrl+Z` / `Ctrl+Shift+Z`| `Cmd+Z` / `Cmd+Shift+Z`|
+
+On macOS, the first capture requires granting the **Screen Recording** permission
+(System Settings → Privacy & Security → Screen Recording); macOS only applies a newly
+granted permission after you **restart OpenSoegaki**.
 
 ## Project layout
 

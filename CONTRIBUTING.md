@@ -25,6 +25,26 @@ We use **pnpm only** — please do not commit `package-lock.json` or `yarn.lock`
   and clipboard live in `src-tauri/`; all drawing and interaction live in `src/`.
 - **Stay light** — this is a tray utility. Think twice before adding dependencies.
 
+## Releasing
+
+To cut a release:
+
+1. Set the same `X.Y.Z` version in **both** `src-tauri/Cargo.toml` (`[package].version`)
+   and `package.json` (`version`).
+2. Commit the version bump.
+3. Tag the commit: `git tag vX.Y.Z`
+4. Push the tag: `git push origin vX.Y.Z`
+
+Pushing the tag triggers the release workflow (`.github/workflows/release.yml`), which
+builds Windows and macOS bundles via `tauri-action` and attaches them to a GitHub Release.
+The workflow's `verify-version` job fails the release if the tag version doesn't match
+both `Cargo.toml` and `package.json` — fix the mismatch and re-tag rather than trying to
+push over an existing tag.
+
+Note: `src-tauri/tauri.conf.json` intentionally has no `version` field; Tauri falls back
+to `src-tauri/Cargo.toml`'s version, which is the single source of truth for the bundle
+version.
+
 ## AI-assisted development
 
 This repository ships Claude Code agent definitions in `.claude/agents/`

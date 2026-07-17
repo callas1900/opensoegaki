@@ -15,6 +15,32 @@ const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
 const editor = new Editor(canvas);
 editor.setTool(editor.tool); // apply initial cursor feedback for the default tool
 
+const captureBtn = document.querySelector<HTMLButtonElement>("#capture")!;
+
+// macOS-only: shown when capture_fullscreen rejects with the
+// SCREEN_RECORDING_PERMISSION sentinel (no Screen Recording access granted).
+// Harmless dead UI on Windows/Linux, where that rejection never occurs.
+const permissionModal = document.querySelector<HTMLDivElement>("#permission-modal")!;
+const permissionOpenSettingsBtn = document.querySelector<HTMLButtonElement>(
+  "#permission-open-settings",
+)!;
+
+function showPermissionModal(): void {
+  permissionModal.hidden = false;
+  permissionOpenSettingsBtn.focus(); // first focusable action, per standard dialog convention
+}
+
+function hidePermissionModal(): void {
+  permissionModal.hidden = true;
+  captureBtn.focus(); // return focus to the control that opened the dialog
+}
+
+permissionOpenSettingsBtn.addEventListener("click", () => void invoke("open_screen_recording_settings"));
+document.querySelector<HTMLButtonElement>("#permission-dismiss")!.addEventListener("click", hidePermissionModal);
+permissionModal.addEventListener("click", (e) => {
+  if (e.target === permissionModal) hidePermissionModal(); // click landed on the backdrop, not .modal
+});
+
 // ---- toolbar ---------------------------------------------------------------
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
@@ -60,6 +86,15 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 window.addEventListener("keydown", (e) => {
+  // The permission modal takes precedence over every other shortcut while
+  // open, including the typing-target guard below: Escape must always
+  // dismiss it, even if focus somehow ended up in a text input.
+  if (e.key === "Escape" && !permissionModal.hidden) {
+    e.preventDefault();
+    hidePermissionModal();
+    return;
+  }
+
   // While the inline text editor (or any other text input) is focused, all
   // global shortcuts are suppressed so native undo/copy/edit keys reach it
   // instead; Escape is handled by the editor's own keydown listener.
@@ -119,7 +154,6 @@ window.addEventListener("paste", (e) => {
   }
 });
 
-const captureBtn = document.querySelector<HTMLButtonElement>("#capture")!;
 captureBtn.addEventListener("click", async () => {
   captureBtn.disabled = true;
   try {
@@ -145,7 +179,13 @@ captureBtn.addEventListener("click", async () => {
 
     showLoadedState();
   } catch (err) {
-    console.error("capture failed:", err);
+    // The invoke rejection may arrive as the raw string rather than an Error,
+    // so normalize with String() before comparing against the IPC sentinel.
+    if (String(err) === "SCREEN_RECORDING_PERMISSION") {
+      showPermissionModal();
+    } else {
+      console.error("capture failed:", err);
+    }
   } finally {
     captureBtn.disabled = false;
   }

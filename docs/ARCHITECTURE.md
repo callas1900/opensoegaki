@@ -249,10 +249,37 @@ Screenshots are sensitive. OpenSoegaki performs **no network I/O** and must stay
 way unless a feature is explicit, opt-in, and reviewed. `save_png` writes only to
 a user-chosen local path via the native dialog; it never transmits data.
 
+## Release pipeline
+
+Releases are tag-triggered: pushing a `vX.Y.Z` tag runs
+`.github/workflows/release.yml`, a matrix build over `windows-latest` and
+`macos-latest` (macOS targets `aarch64-apple-darwin` only) using
+`tauri-apps/tauri-action`, which builds and attaches bundles to a GitHub
+Release. The bundle `targets` config is `"all"`, letting Tauri resolve the
+right per-OS formats (NSIS/MSI on Windows, `.app`/`.dmg` on macOS). The
+bundle version is single-sourced to `src-tauri/Cargo.toml`
+(`tauri.conf.json` has no `version` field and falls back to it); a
+`verify-version` job guards the release by failing it if the tag,
+`Cargo.toml`, and `package.json` versions don't all match. Bundles are
+**unsigned** — code signing and macOS notarization are out of scope for now
+(see the README's Download & install section for the SmartScreen/Gatekeeper
+workarounds this implies).
+
 ## Platform roadmap
 
 1. **Windows 11** (current) — NSIS/MSI bundles.
-2. **macOS** — xcap and tauri-plugin-drag both support it; main work items are
-   Screen Recording permission UX (needed for the Capture button's `xcap` call) and a
-   `.icns` icon. The paste path needs no platform-specific work: WKWebView fires the
-   same DOM `paste` event as WebView2 for Cmd+V.
+2. **macOS** — xcap and tauri-plugin-drag both support it. Screen Recording
+   permission UX is implemented: `src-tauri/src/permission.rs` calls
+   `CGPreflightScreenCaptureAccess` before capture and, if not granted, calls
+   `CGRequestScreenCaptureAccess` once (seeds the TCC prompt) via
+   `ensure_screen_capture_access()`. `capture_fullscreen` returns the sentinel
+   error string `SCREEN_RECORDING_PERMISSION` when access isn't granted; the
+   frontend catches it and shows a modal explaining that macOS only applies a
+   newly granted permission after an app restart, with an "Open Settings"
+   button wired to the `open_screen_recording_settings` command (opens the
+   Privacy & Security → Screen Recording pane). The paste path needs no
+   platform-specific work: WKWebView fires the same DOM `paste` event as
+   WebView2 for Cmd+V. The app registers no global hotkeys — all shortcuts are
+   in-app key listeners keyed off `metaKey` on macOS (`ctrlKey` on
+   Windows/Linux) — so there is no collision with the system's own
+   Cmd+Shift+5 screenshot shortcut.

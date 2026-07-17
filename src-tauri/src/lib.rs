@@ -1,6 +1,7 @@
 //! OpenSoegaki core: tray residency, capture commands, drag-out.
 
 mod capture;
+mod permission;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -31,6 +32,10 @@ fn show_main_window(app: &AppHandle) {
 /// never occupies an async worker thread.
 #[tauri::command]
 async fn capture_fullscreen(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    if !permission::ensure_screen_capture_access() {
+        return Err("SCREEN_RECORDING_PERMISSION".to_string());
+    }
+
     let png = tauri::async_runtime::spawn_blocking(move || {
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.hide();
@@ -109,6 +114,13 @@ async fn save_png(png: Vec<u8>, default_name: String) -> Result<Option<String>, 
     }
 }
 
+/// Open the macOS Screen Recording settings pane (no-op elsewhere), for the
+/// frontend's permission-required modal to call after a denied capture.
+#[tauri::command]
+fn open_screen_recording_settings() -> Result<(), String> {
+    permission::open_screen_recording_settings()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -117,7 +129,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             prepare_drag_file,
             capture_fullscreen,
-            save_png
+            save_png,
+            open_screen_recording_settings
         ])
         .setup(|app| {
             // Tray icon with a minimal menu; closing the window hides to tray.

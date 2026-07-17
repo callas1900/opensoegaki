@@ -45,6 +45,20 @@
         </div>
       </footer>
     </div>
+    <div id="permission-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="permission-modal-title">
+        <h2 id="permission-modal-title">Screen Recording permission required</h2>
+        <p>
+          OpenSoegaki needs the macOS Screen Recording permission to capture the screen.
+          Grant it in <strong>System Settings → Privacy &amp; Security → Screen Recording</strong>,
+          then <strong>restart OpenSoegaki</strong> (macOS applies the permission only after a restart).
+        </p>
+        <div class="modal-actions">
+          <button id="permission-open-settings">Open Settings</button>
+          <button id="permission-dismiss">Dismiss</button>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

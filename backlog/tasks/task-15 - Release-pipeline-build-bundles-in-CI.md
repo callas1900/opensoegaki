@@ -1,10 +1,10 @@
 ---
 id: TASK-15
 title: 'Release pipeline: matrix build (Windows + macOS) in CI'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-07-12 02:45'
-updated_date: '2026-07-17 07:07'
+updated_date: '2026-07-17 16:23'
 labels:
   - platform
 dependencies: []
@@ -27,3 +27,16 @@ CI only lints today. Add a tag-triggered release workflow using tauri-apps/tauri
 - [ ] #5 README documents that bundles are unsigned (SmartScreen/Gatekeeper caveats)
 - [ ] #6 Pushing a version tag triggers a release workflow that builds on a windows-latest + macos-latest matrix
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented 2026-07-18 (pending on-device verification before Done).
+
+- tauri.conf.json: removed literal version (Cargo.toml is now the single source of truth for the bundle version); bundle.targets changed to "all" (per-OS resolution: Windows nsis+msi, macOS app+dmg).
+- .github/workflows/release.yml (new): tag push v* -> verify-version job (fails unless tag == Cargo.toml == package.json version) -> create-release job (github-script, draft release, outputs release_id) -> matrix build (windows-latest; macos-latest --target aarch64-apple-darwin) via tauri-apps/tauri-action@v0 with releaseId -> publish-release job flips draft to published. Draft-then-publish avoids the tauri-action matrix race; a failed leg leaves only a private draft. User decision: auto-publish on tag (no manual publish step); macOS build is Apple Silicon only (user's verification Mac is M-series).
+- README: Download & install section with unsigned-binary caveats (SmartScreen / Gatekeeper right-click-Open). CONTRIBUTING: Releasing checklist (bump both files, tag vX.Y.Z, push). ARCHITECTURE: Release pipeline section.
+- Reviewed by reviewer agent (2 passes): blocking release-race fixed, APPROVE. AC regression pass over Done tasks: no AC broken.
+
+Remaining for Done: push a v0.1.0 tag, confirm both runners produce artifacts (AC1/2/6), install+launch NSIS/MSI on Windows 11 (AC3).
+<!-- SECTION:NOTES:END -->
