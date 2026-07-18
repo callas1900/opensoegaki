@@ -35,9 +35,15 @@ Bundles are currently **unsigned**:
 
 - **Windows:** SmartScreen will warn about an unrecognized publisher. Click
   "More info" → "Run anyway" to proceed.
-- **macOS:** Gatekeeper blocks the first launch. Right-click the app and choose
-  **Open**, or run `xattr -dr com.apple.quarantine /Applications/OpenSoegaki.app`
-  from a terminal. Note: the macOS build currently targets Apple Silicon (aarch64) only.
+- **macOS:** Gatekeeper reports the app as *"damaged and can't be opened"*
+  (right-click → Open does **not** bypass this dialog). Clear the quarantine flag
+  once from a terminal, then launch normally:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/OpenSoegaki.app
+  ```
+
+  Note: the macOS build currently targets Apple Silicon (aarch64) only.
 
 ## Getting started (development)
 

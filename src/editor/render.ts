@@ -2,7 +2,8 @@
  * Pure rendering of the object model onto a CanvasRenderingContext2D.
  * Used both by the live editor canvas and by the exporter — keep it side-effect free.
  */
-import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation } from "./model";
+import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation } from "./model";
+import { contrastText, HIGHLIGHTER_WIDTH_SCALE } from "./model";
 
 const OUTLINE = "rgba(255,255,255,0.9)";
 
@@ -22,6 +23,12 @@ export function renderAnnotations(ctx: CanvasRenderingContext2D, list: Annotatio
         break;
       case "text":
         drawText(ctx, a);
+        break;
+      case "highlight":
+        drawHighlight(ctx, a);
+        break;
+      case "badge":
+        drawBadge(ctx, a);
         break;
     }
   }
@@ -78,4 +85,49 @@ function drawText(ctx: CanvasRenderingContext2D, a: TextAnnotation): void {
   ctx.strokeText(a.text, a.at.x, a.at.y);
   ctx.fillStyle = a.color;
   ctx.fillText(a.text, a.at.x, a.at.y);
+}
+
+const HIGHLIGHT_MULTIPLY_ALPHA = 0.45;
+const HIGHLIGHT_SCREEN_ALPHA = 0.3;
+
+/**
+ * Translucent marker-style stroke; deliberately no white outline pass (unlike
+ * arrow/rect/text). Two passes over the same path: multiply deposits color on
+ * light backgrounds while keeping dark text/lines legible underneath; screen
+ * lifts the stroke into view on dark/black backgrounds (a no-op over white).
+ */
+function drawHighlight(ctx: CanvasRenderingContext2D, a: HighlighterAnnotation): void {
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = a.strokeWidth * HIGHLIGHTER_WIDTH_SCALE;
+  ctx.strokeStyle = a.color;
+  ctx.beginPath();
+  ctx.moveTo(a.points[0].x, a.points[0].y);
+  for (const p of a.points.slice(1)) ctx.lineTo(p.x, p.y);
+  ctx.globalCompositeOperation = "multiply";
+  ctx.globalAlpha = HIGHLIGHT_MULTIPLY_ALPHA;
+  ctx.stroke();
+  ctx.globalCompositeOperation = "screen";
+  ctx.globalAlpha = HIGHLIGHT_SCREEN_ALPHA;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Filled circle + white ring + centered number. save/restore is load-bearing: textAlign/textBaseline must not leak into drawText. */
+function drawBadge(ctx: CanvasRenderingContext2D, a: BadgeAnnotation): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
+  ctx.fillStyle = a.color;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = Math.max(2, a.radius * 0.15);
+  ctx.stroke();
+  ctx.font = fontString(a.radius * 1.2);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = contrastText(a.color);
+  ctx.fillText(String(a.number), a.at.x, a.at.y);
+  ctx.restore();
 }

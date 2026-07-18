@@ -8,11 +8,14 @@ import {
   type Point,
   type SizeName,
   type Tool,
+  BADGE_RADIUS_PRESETS,
   DEFAULTS,
   FONT_PRESETS,
   PALETTE,
   STROKE_PRESETS,
+  nextBadgeNumber,
   nextId,
+  renumberBadges,
   translateAnnotation,
 } from "./model";
 import { fontString, renderAnnotations } from "./render";
@@ -27,6 +30,8 @@ const HANDLE_DRAW_PX = 10;
 const HANDLE_HIT_PX = 12;
 /** Gap kept between the crop corner handle and the floating ✓/✗ controls, in CSS px. */
 const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
+/** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
+const HIGHLIGHTER_MIN_POINT_DIST_PX = 2;
 
 export class Editor {
   readonly doc: Doc = { imageBitmap: null, annotations: [] };
@@ -34,6 +39,7 @@ export class Editor {
   color: string = DEFAULTS.color;
   strokeWidth: number = DEFAULTS.strokeWidth;
   fontSize: number = DEFAULTS.fontSize;
+  size: SizeName = "M";
   selectedId: string | null = null;
 
   private readonly history = new History();
@@ -187,6 +193,7 @@ export class Editor {
 
   /** Set the stroke width / font size used by newly drawn annotations. */
   setSize(name: SizeName): void {
+    this.size = name;
     this.strokeWidth = STROKE_PRESETS[name];
     this.fontSize = FONT_PRESETS[name];
   }
@@ -200,6 +207,7 @@ export class Editor {
     if (this.selectedId === null) return;
     this.history.push(this.snapshot());
     this.doc.annotations = this.doc.annotations.filter((a) => a.id !== this.selectedId);
+    this.doc.annotations = renumberBadges(this.doc.annotations);
     this.selectedId = null;
     this.render();
   }
@@ -442,7 +450,7 @@ export class Editor {
 
   private bindPointerEvents(): void {
     this.canvas.addEventListener("pointerdown", (e) => this.onDown(this.toCanvas(e), e));
-    this.canvas.addEventListener("pointermove", (e) => this.onMove(this.toCanvas(e)));
+    this.canvas.addEventListener("pointermove", (e) => this.onMove(this.toCanvas(e), e.shiftKey));
     this.canvas.addEventListener("pointerup", () => this.onUp());
   }
 
@@ -526,15 +534,30 @@ export class Editor {
     }
 
     const base = { id: nextId(), color: this.color, strokeWidth: this.strokeWidth };
+
+    if (tool === "badge") {
+      this.commit({
+        ...base,
+        kind: "badge",
+        at: p,
+        number: nextBadgeNumber(this.doc.annotations),
+        radius: BADGE_RADIUS_PRESETS[this.size],
+      });
+      this.render();
+      return;
+    }
+
     if (tool === "arrow") {
       this.draft = { ...base, kind: "arrow", from: p, to: p };
     } else if (tool === "rect") {
       this.draft = { ...base, kind: "rect", a: p, b: p };
+    } else if (tool === "highlight") {
+      this.draft = { ...base, kind: "highlight", points: [p] };
     }
     this.render();
   }
 
-  private onMove(p: Point): void {
+  private onMove(p: Point, shiftKey = false): void {
     const tool = this.tool;
 
     if (this.move) {
@@ -566,6 +589,18 @@ export class Editor {
     if (this.draft) {
       if (this.draft.kind === "arrow") this.draft.to = p;
       else if (this.draft.kind === "rect") this.draft.b = p;
+      else if (this.draft.kind === "highlight") {
+        if (shiftKey) {
+          // Straight-line mode: y locked to the stroke's starting point (horizontal marking).
+          const first = this.draft.points[0];
+          this.draft.points = [first, { x: p.x, y: first.y }];
+        } else {
+          const last = this.draft.points[this.draft.points.length - 1];
+          if (Math.hypot(p.x - last.x, p.y - last.y) >= HIGHLIGHTER_MIN_POINT_DIST_PX) {
+            this.draft.points.push(p);
+          }
+        }
+      }
       this.render();
       return;
     }
@@ -603,7 +638,8 @@ export class Editor {
     // Ignore accidental clicks that produced a zero-size shape.
     const degenerate =
       (d.kind === "arrow" && d.from.x === d.to.x && d.from.y === d.to.y) ||
-      (d.kind === "rect" && d.a.x === d.b.x && d.a.y === d.b.y);
+      (d.kind === "rect" && d.a.x === d.b.x && d.a.y === d.b.y) ||
+      (d.kind === "highlight" && (d.points.length < 2 || d.points.every((pt) => pt.x === d.points[0].x && pt.y === d.points[0].y)));
     if (!degenerate) this.commit(d);
     this.render();
   }

@@ -1,10 +1,10 @@
 ---
 id: TASK-14
 title: macOS support pass
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-12 02:45'
-updated_date: '2026-07-17 16:23'
+updated_date: '2026-07-18 17:16'
 labels:
   - platform
 dependencies: []
@@ -20,8 +20,8 @@ Per docs/ARCHITECTURE.md roadmap: Screen Recording permission UX, .icns icon, an
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 App captures and annotates on macOS with a granted Screen Recording permission flow
-- [ ] #2 Non-colliding default hotkeys chosen and documented
+- [x] #1 App captures and annotates on macOS with a granted Screen Recording permission flow
+- [x] #2 Non-colliding default hotkeys chosen and documented
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -38,4 +38,6 @@ AC#2 interpretation (user-approved 2026-07-18): the app intentionally registers 
 - No Info.plist NSScreenCaptureUsageDescription (not needed for xcap's CGDisplayCreateImage path).
 
 Remaining for Done: on the Apple Silicon Mac — install the .dmg from the release, Gatekeeper right-click-Open, capture -> modal -> Open Settings -> grant -> restart -> capture+annotate works (AC1); verify Cmd shortcuts and check AC2.
+
+Verified by the user on the Apple Silicon Mac (2026-07-19): installed from the v0.1.0 release .dmg. Note: Gatekeeper showed the 'damaged and can't be opened' dialog (unsigned app), which right-click->Open does NOT bypass; cleared with 'xattr -dr com.apple.quarantine'. Capture, annotation, and in-app Cmd shortcuts confirmed working (AC1/AC2). README's Gatekeeper section updated accordingly (xattr as the primary workaround). Follow-up candidates discussed with the user, not tasked yet: Developer ID signing + notarization (removes the dialog entirely), Homebrew tap distribution.
 <!-- SECTION:NOTES:END -->

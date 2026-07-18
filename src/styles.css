@@ -10,7 +10,7 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #app { display: flex; flex-direction: column; height: 100vh; }
 
 #toolbar {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 8px 12px; background: var(--panel);
 }
 #toolbar button {
@@ -91,3 +91,23 @@ kbd { background: var(--panel); border-radius: 4px; padding: 2px 6px; font-famil
 }
 .modal-actions button:hover { background: #3a3d42; }
 #permission-open-settings { background: var(--accent); border-color: var(--accent); }
+
+/* Popover trigger open-state (triggers otherwise inherit #toolbar button styling). */
+.popover-trigger.popover-open { background: #3a3d42; }
+
+/* Current-color chip inside #color-btn. */
+#color-chip {
+  display: inline-block; width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.3); vertical-align: middle;
+  background: var(--accent); /* overwritten by JS to the current color */
+}
+
+/* Flyout panels. */
+.popover {
+  position: fixed; z-index: 9;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px; background: var(--panel);
+  border: 1px solid #45484e; border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+}
+.popover[hidden] { display: none; }

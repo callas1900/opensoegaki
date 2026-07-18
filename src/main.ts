@@ -9,6 +9,7 @@ import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { Editor } from "./editor/canvas";
 import { exportPng } from "./editor/exporter";
 import { PALETTE, type SizeName, type Tool } from "./editor/model";
+import { registerPopover, closeOpenPopover } from "./ui/popover";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
@@ -16,6 +17,16 @@ const editor = new Editor(canvas);
 editor.setTool(editor.tool); // apply initial cursor feedback for the default tool
 
 const captureBtn = document.querySelector<HTMLButtonElement>("#capture")!;
+
+const colorBtn = document.querySelector<HTMLButtonElement>("#color-btn")!;
+const colorPopover = document.querySelector<HTMLDivElement>("#color-popover")!;
+const colorChip = document.querySelector<HTMLSpanElement>("#color-chip")!;
+const sizeBtn = document.querySelector<HTMLButtonElement>("#size-btn")!;
+const sizePopover = document.querySelector<HTMLDivElement>("#size-popover")!;
+
+registerPopover(colorBtn, colorPopover);
+registerPopover(sizeBtn, sizePopover);
+colorChip.style.background = editor.color;
 
 // macOS-only: shown when capture_fullscreen rejects with the
 // SCREEN_RECORDING_PERMISSION sentinel (no Screen Recording access granted).
@@ -49,6 +60,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
     document.querySelector("button.tool.active")?.classList.remove("active");
     btn.classList.add("active");
     btn.blur(); // so pressing Enter next doesn't re-activate this button
+    closeOpenPopover();
   });
 }
 
@@ -61,6 +73,8 @@ for (const color of PALETTE) {
     editor.color = color;
     palette.querySelector(".swatch.active")?.classList.remove("active");
     swatch.classList.add("active");
+    colorChip.style.background = color;
+    closeOpenPopover();
   });
   palette.appendChild(swatch);
 }
@@ -71,6 +85,8 @@ for (const btn of sizes.querySelectorAll<HTMLButtonElement>("button[data-size]")
     editor.setSize(btn.dataset.size as SizeName);
     sizes.querySelector(".active")?.classList.remove("active");
     btn.classList.add("active");
+    sizeBtn.textContent = btn.dataset.size!;
+    closeOpenPopover();
   });
 }
 
@@ -99,6 +115,11 @@ window.addEventListener("keydown", (e) => {
   // global shortcuts are suppressed so native undo/copy/edit keys reach it
   // instead; Escape is handled by the editor's own keydown listener.
   if (isTypingTarget(e.target)) return;
+
+  if (e.key === "Escape" && closeOpenPopover()) {
+    e.preventDefault();
+    return;
+  }
 
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z") {

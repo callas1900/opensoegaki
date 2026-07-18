@@ -6,7 +6,7 @@
 
 export type Point = { x: number; y: number };
 
-export type ToolKind = "arrow" | "rect" | "text";
+export type ToolKind = "arrow" | "rect" | "text" | "highlight" | "badge";
 export type Tool = ToolKind | "select" | "crop";
 
 interface AnnotationBase {
@@ -35,7 +35,19 @@ export interface TextAnnotation extends AnnotationBase {
   fontSize: number;
 }
 
-export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation;
+export interface HighlighterAnnotation extends AnnotationBase {
+  kind: "highlight";
+  points: Point[]; // >= 2 after commit; bitmap coords
+}
+
+export interface BadgeAnnotation extends AnnotationBase {
+  kind: "badge";
+  at: Point;       // circle center
+  number: number;  // 1-based display value
+  radius: number;  // baked from BADGE_RADIUS_PRESETS at creation
+}
+
+export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation | HighlighterAnnotation | BadgeAnnotation;
 
 /** Editor document: background bitmap + ordered annotation list. */
 export interface Doc {
@@ -55,6 +67,9 @@ export type SizeName = "S" | "M" | "L";
 
 export const STROKE_PRESETS: Record<SizeName, number> = { S: 3, M: 6, L: 12 };
 export const FONT_PRESETS: Record<SizeName, number> = { S: 18, M: 28, L: 44 };
+
+export const HIGHLIGHTER_WIDTH_SCALE = 3;
+export const BADGE_RADIUS_PRESETS: Record<SizeName, number> = { S: 14, M: 20, L: 28 };
 
 let counter = 0;
 export function nextId(): string {
@@ -78,5 +93,36 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number): Anno
       };
     case "text":
       return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+    case "highlight":
+      return { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+    case "badge":
+      return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
   }
+}
+
+/** 1-based number the next placed badge should display: count of existing badges + 1. */
+export function nextBadgeNumber(list: Annotation[]): number {
+  return list.filter((a) => a.kind === "badge").length + 1;
+}
+
+/**
+ * Return a new array where badge annotations are reassigned `number` 1..N in
+ * array order; non-badge annotations pass through unchanged. Never mutates
+ * the input array or its elements.
+ */
+export function renumberBadges(list: Annotation[]): Annotation[] {
+  let n = 0;
+  return list.map((a) => (a.kind === "badge" ? { ...a, number: ++n } : a));
+}
+
+/**
+ * Pick the readable text color (black or white) for a given `#RRGGBB`
+ * background, using the standard perceived-luminance formula.
+ */
+export function contrastText(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const L = 0.299 * r + 0.587 * g + 0.114 * b;
+  return L > 140 ? "#000000" : "#FFFFFF";
 }

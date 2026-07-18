@@ -5,6 +5,7 @@
  * mechanical guarantee that selection chrome cannot leak into rasterized output.
  */
 import type { Annotation, Point } from "./model";
+import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { fontString } from "./render";
 
 export interface Bounds {
@@ -32,6 +33,17 @@ export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Boun
       const h = a.fontSize * 1.2;
       return { x: a.at.x, y: a.at.y, w, h };
     }
+    case "highlight": {
+      const xs = a.points.map((p) => p.x);
+      const ys = a.points.map((p) => p.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    }
+    case "badge":
+      return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
   }
 }
 
@@ -68,6 +80,16 @@ function hitsAnnotation(
       const b = boundsOf(a, measure);
       return pointInBounds(p, inflate(b, tolerance));
     }
+    case "highlight": {
+      let minDist = Infinity;
+      for (let i = 0; i < a.points.length - 1; i++) {
+        const d = distanceToSegment(p, a.points[i], a.points[i + 1]);
+        if (d < minDist) minDist = d;
+      }
+      return minDist <= tolerance + (a.strokeWidth * HIGHLIGHTER_WIDTH_SCALE) / 2;
+    }
+    case "badge":
+      return Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance;
   }
 }
 
