@@ -1,6 +1,6 @@
 [package]
 name = "opensoegaki"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast, lightweight, open-source screenshot annotation tool"
 authors = ["OpenSoegaki contributors"]
 license = "MIT"
