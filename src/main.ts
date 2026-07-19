@@ -26,7 +26,7 @@ async function bytesToBitmap(buf: ArrayBuffer): Promise<ImageBitmap> {
 }
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
-const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
+const stage = document.querySelector<HTMLElement>("#stage")!;
 const editor = new Editor(canvas);
 editor.setTool(editor.tool); // apply initial cursor feedback for the default tool
 
@@ -178,9 +178,9 @@ window.addEventListener("keydown", (e) => {
 
 // ---- input: paste and full-screen capture -----------------------------------
 
-/** Hide the empty-state hint once the editor has a background image. */
+/** Reveal the canvas and hide the welcome empty state once the editor has a background image. */
 function showLoadedState(): void {
-  emptyHint.style.display = "none";
+  stage.classList.remove("empty");
 }
 
 // Paste is the primary capture path: the user shoots with the OS tool

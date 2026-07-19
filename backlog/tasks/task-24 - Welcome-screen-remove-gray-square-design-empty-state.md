@@ -1,9 +1,10 @@
 ---
 id: TASK-24
 title: 'Welcome screen: remove gray square, design empty state'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 01:48'
+updated_date: '2026-07-19 16:17'
 labels: []
 dependencies: []
 priority: medium

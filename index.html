@@ -84,9 +84,18 @@
           <button data-size="L" title="Large">L</button>
         </div>
       </div>
-      <main id="stage">
+      <main id="stage" class="empty">
         <canvas id="canvas"></canvas>
-        <p id="empty-hint">Press <kbd>Ctrl+V</kbd> to paste a screenshot, or click <strong>Capture</strong> for the full screen.</p>
+        <div id="welcome">
+          <div class="welcome-mark">
+            <svg viewBox="0 0 24 24" width="88" height="88" fill="none" stroke="#4d5055" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+            <img src="/src-tauri/icons/icon.svg" width="52" height="52" alt="" />
+          </div>
+          <p class="welcome-name">OpenSoegaki</p>
+          <p class="welcome-hint">Press <kbd>Ctrl+V</kbd> to paste a screenshot,<br />or click <strong>Capture</strong> for the full screen.</p>
+        </div>
       </main>
       <footer id="share-bar">
         <div id="drag-tab" title="Drag me into another app to share as PNG">⇱ drag to share</div>

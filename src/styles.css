@@ -37,7 +37,16 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 
 #stage { flex: 1; overflow: auto; display: grid; place-items: center; position: relative; }
 #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
-#empty-hint { position: absolute; color: #9aa0a6; }
+#stage.empty #canvas { display: none; }
+
+/* Welcome empty state, shown until an image is loaded */
+#welcome { text-align: center; color: #9aa0a6; }
+.welcome-mark { display: grid; place-items: center; margin: 0 auto 16px; }
+.welcome-mark > * { grid-area: 1 / 1; }
+.welcome-name { font-size: 15px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #c9cdd2; margin: 0 0 18px; }
+.welcome-hint { margin: 0; font-size: 14px; line-height: 2.1; }
+.welcome-hint strong { color: #c9cdd2; }
+#stage:not(.empty) #welcome { display: none; }
 
 .crop-controls {
   position: absolute; display: flex; gap: 4px; z-index: 5;
@@ -56,7 +65,7 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
   min-width: 1em;
   text-shadow: 0 0 3px rgba(255,255,255,0.9), 0 0 3px rgba(255,255,255,0.9);
 }
-kbd { background: var(--panel); border-radius: 4px; padding: 2px 6px; font-family: inherit; }
+kbd { background: var(--panel); border: 1px solid #45484e; border-bottom-width: 2px; border-radius: 5px; padding: 2px 7px; font-family: inherit; }
 
 #share-bar {
   display: flex; align-items: center; justify-content: space-between;

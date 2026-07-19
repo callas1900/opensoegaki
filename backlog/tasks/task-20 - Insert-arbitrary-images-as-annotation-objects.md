@@ -1,10 +1,10 @@
 ---
 id: TASK-20
 title: Insert arbitrary images as annotation objects
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-14 08:36'
-updated_date: '2026-07-19 14:40'
+updated_date: '2026-07-19 16:17'
 labels:
   - feature
 dependencies:
