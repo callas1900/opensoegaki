@@ -34,7 +34,10 @@ const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
 const HIGHLIGHTER_MIN_POINT_DIST_PX = 2;
 
 export class Editor {
-  readonly doc: Doc = { imageBitmap: null, annotations: [] };
+  // doc.images is a monotonic session cache (see model.ts's Doc.images doc
+  // comment); it is never cleared by setBackground/restore, only appended to
+  // by insertImage.
+  readonly doc: Doc = { imageBitmap: null, annotations: [], images: new Map() };
   tool: Tool = "arrow";
   color: string = DEFAULTS.color;
   strokeWidth: number = DEFAULTS.strokeWidth;
@@ -87,6 +90,36 @@ export class Editor {
   }
 
   /**
+   * Insert `bitmap` as a new image annotation, scaled to fit within 90% of
+   * the canvas (never upscaled) and centered. No-op if there is no
+   * background image loaded yet. The bitmap is cached in `doc.images` keyed
+   * by the new annotation's id, then committed through the normal
+   * history-push+append path so the insertion is undoable.
+   */
+  insertImage(bitmap: ImageBitmap): void {
+    if (!this.hasImage()) return;
+    const canvasW = this.doc.imageBitmap!.width;
+    const canvasH = this.doc.imageBitmap!.height;
+    const scale = Math.min(1, (0.9 * canvasW) / bitmap.width, (0.9 * canvasH) / bitmap.height);
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    const at: Point = { x: (canvasW - width) / 2, y: (canvasH - height) / 2 };
+
+    const id = nextId();
+    this.doc.images.set(id, bitmap);
+    this.commit({
+      id,
+      kind: "image",
+      color: DEFAULTS.color,
+      strokeWidth: DEFAULTS.strokeWidth,
+      at,
+      width,
+      height,
+    });
+    this.render();
+  }
+
+  /**
    * Shared tail of loadImage/loadImageBlob: replace the background and resize
    * the canvas. If a document is already loaded, the previous {background,
    * annotations} snapshot is pushed onto history first so the replacement is
@@ -96,6 +129,10 @@ export class Editor {
   private setBackground(bitmap: ImageBitmap): void {
     // The pending text belongs to the old image; discard rather than commit onto the new one.
     this.cancelTextEditor();
+    // doc.images is intentionally NOT cleared here: it's a monotonic session
+    // cache keyed by annotation id (see model.ts), so undo/redo across a
+    // background replacement can still find bitmaps for image annotations
+    // that predate it.
     if (this.doc.imageBitmap !== null) {
       this.history.push(this.snapshot());
     } else {
@@ -138,6 +175,9 @@ export class Editor {
     this.cancelTextEditor();
     this.doc.imageBitmap = snapshot.imageBitmap;
     this.doc.annotations = snapshot.annotations;
+    // doc.images is not touched here either — same monotonic-cache rationale
+    // as setBackground(): a redo that brings back an ImageAnnotation must
+    // still find its bitmap.
     // The restored array may not contain the previously selected id, and even
     // if it does by coincidence, the highlight would be misleading.
     this.selectedId = null;
@@ -160,8 +200,8 @@ export class Editor {
     const { ctx, canvas } = this;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (this.doc.imageBitmap) ctx.drawImage(this.doc.imageBitmap, 0, 0);
-    renderAnnotations(ctx, this.doc.annotations);
-    if (this.draft) renderAnnotations(ctx, [this.draft]);
+    renderAnnotations(ctx, this.doc.annotations, this.doc.images);
+    if (this.draft) renderAnnotations(ctx, [this.draft], this.doc.images);
     // Selection chrome is drawn last, directly on the live canvas context only —
     // never through renderAnnotations, so it can never reach exportPng().
     const selected = this.selectedAnnotation();

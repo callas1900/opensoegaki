@@ -4,12 +4,26 @@
  * drag-out) lives in src-tauri/.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { writeImage, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { Editor } from "./editor/canvas";
 import { exportPng } from "./editor/exporter";
 import { PALETTE, type SizeName, type Tool } from "./editor/model";
 import { registerPopover, closeOpenPopover } from "./ui/popover";
+
+/** Extensions accepted for image insertion (dialog filter, drag-drop, IPC allowlist). Keep in sync with src-tauri's IMAGE_EXTENSIONS. */
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
+
+function hasImageExtension(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase();
+  return !!ext && IMAGE_EXTENSIONS.includes(ext);
+}
+
+/** Decode raw bytes (as returned by an IPC `Response`) into an `ImageBitmap`. */
+async function bytesToBitmap(buf: ArrayBuffer): Promise<ImageBitmap> {
+  return createImageBitmap(new Blob([buf]));
+}
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const emptyHint = document.querySelector<HTMLParagraphElement>("#empty-hint")!;
@@ -101,6 +115,13 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
 }
 
+// Set right before the Ctrl+Shift+V keydown branch below triggers its own
+// clipboard-image read, and auto-cleared on the next microtask: suppresses
+// the `paste` event handler further down so a single keypress doesn't both
+// insert-as-annotation (via keydown) AND replace-the-background (via the
+// browser's paste event that keydown does not preventDefault-block).
+let suppressNextPaste = false;
+
 window.addEventListener("keydown", (e) => {
   // The permission modal takes precedence over every other shortcut while
   // open, including the typing-target guard below: Escape must always
@@ -122,7 +143,17 @@ window.addEventListener("keydown", (e) => {
   }
 
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key.toLowerCase() === "z") {
+  if (mod && e.shiftKey && e.key.toLowerCase() === "v") {
+    // Ctrl+Shift+V: insert the clipboard image as an annotation, distinct
+    // from plain Ctrl+V's background-replace semantics (handled only by the
+    // `paste` event listener below, left untouched).
+    e.preventDefault();
+    suppressNextPaste = true;
+    setTimeout(() => {
+      suppressNextPaste = false;
+    }, 0);
+    void pasteImageAsAnnotation();
+  } else if (mod && e.key.toLowerCase() === "z") {
     e.preventDefault();
     e.shiftKey ? editor.redo() : editor.undo();
   } else if (mod && e.key.toLowerCase() === "c") {
@@ -158,6 +189,11 @@ function showLoadedState(): void {
 // replaces the background, discarding any pending inline text edit); a paste
 // with no image is left alone so a focused input's native text paste works.
 window.addEventListener("paste", (e) => {
+  if (suppressNextPaste) {
+    suppressNextPaste = false;
+    e.preventDefault();
+    return;
+  }
   const items = e.clipboardData?.items;
   if (!items) return;
   for (const item of items) {
@@ -173,6 +209,57 @@ window.addEventListener("paste", (e) => {
       return;
     }
   }
+});
+
+/** Ctrl+Shift+V handler: read a clipboard image (if any) and insert it as an annotation. */
+async function pasteImageAsAnnotation(): Promise<void> {
+  try {
+    const img = await readImage();
+    const { width, height } = await img.size();
+    const rgba = await img.rgba();
+    const data = new ImageData(new Uint8ClampedArray(rgba), width, height);
+    const bitmap = await createImageBitmap(data);
+    editor.insertImage(bitmap);
+  } catch (err) {
+    console.error("clipboard image paste failed:", err);
+  }
+}
+
+const insertImageBtn = document.querySelector<HTMLButtonElement>("#insert-image")!;
+insertImageBtn.addEventListener("click", async () => {
+  try {
+    const buf = await invoke<ArrayBuffer>("pick_image");
+    const bitmap = await bytesToBitmap(buf);
+    editor.insertImage(bitmap);
+  } catch (err) {
+    if (String(err) !== "CANCELLED") console.error("insert image failed:", err);
+  }
+});
+
+// Drag-and-drop of an image file onto the editor: if a background is already
+// loaded, the dropped image is inserted as an annotation; if the editor is
+// empty, the dropped image becomes the background instead.
+// Tauri's dragDropEnabled defaults to true, which intercepts the drag before
+// it reaches the DOM as HTML5 drag/drop events — so this is wired through
+// the webview-level onDragDropEvent API instead of DOM listeners.
+void getCurrentWebview().onDragDropEvent((event) => {
+  if (event.payload.type !== "drop") return;
+  const path = event.payload.paths.find(hasImageExtension);
+  if (!path) return;
+  void (async () => {
+    try {
+      const buf = await invoke<ArrayBuffer>("read_image_file", { path });
+      if (editor.hasImage()) {
+        const bitmap = await bytesToBitmap(buf);
+        editor.insertImage(bitmap);
+      } else {
+        await editor.loadImage(new Uint8Array(buf));
+        showLoadedState();
+      }
+    } catch (err) {
+      console.error("drag-drop image insert failed:", err);
+    }
+  })();
 });
 
 captureBtn.addEventListener("click", async () => {

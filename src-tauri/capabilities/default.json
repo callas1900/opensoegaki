@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "clipboard-manager:allow-write-image",
+    "clipboard-manager:allow-read-image",
     "drag:default"
   ]
 }

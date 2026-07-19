@@ -10,7 +10,7 @@ export async function exportPng(doc: Doc): Promise<Uint8Array> {
   const ctx = off.getContext("2d");
   if (!ctx) throw new Error("2D context unavailable");
   ctx.drawImage(doc.imageBitmap, 0, 0);
-  renderAnnotations(ctx as unknown as CanvasRenderingContext2D, doc.annotations);
+  renderAnnotations(ctx as unknown as CanvasRenderingContext2D, doc.annotations, doc.images);
   const blob = await off.convertToBlob({ type: "image/png" });
   return new Uint8Array(await blob.arrayBuffer());
 }

@@ -2,7 +2,7 @@
  * Pure rendering of the object model onto a CanvasRenderingContext2D.
  * Used both by the live editor canvas and by the exporter — keep it side-effect free.
  */
-import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation } from "./model";
+import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation } from "./model";
 import { contrastText, HIGHLIGHTER_WIDTH_SCALE } from "./model";
 
 const OUTLINE = "rgba(255,255,255,0.9)";
@@ -12,7 +12,11 @@ export function fontString(fontSize: number): string {
   return `bold ${fontSize}px ${FONT_STACK}`;
 }
 
-export function renderAnnotations(ctx: CanvasRenderingContext2D, list: Annotation[]): void {
+export function renderAnnotations(
+  ctx: CanvasRenderingContext2D,
+  list: Annotation[],
+  images: ReadonlyMap<string, ImageBitmap>,
+): void {
   for (const a of list) {
     switch (a.kind) {
       case "arrow":
@@ -29,6 +33,9 @@ export function renderAnnotations(ctx: CanvasRenderingContext2D, list: Annotatio
         break;
       case "badge":
         drawBadge(ctx, a);
+        break;
+      case "image":
+        drawImageAnnotation(ctx, a, images);
         break;
     }
   }
@@ -130,4 +137,20 @@ function drawBadge(ctx: CanvasRenderingContext2D, a: BadgeAnnotation): void {
   ctx.fillStyle = contrastText(a.color);
   ctx.fillText(String(a.number), a.at.x, a.at.y);
   ctx.restore();
+}
+
+/**
+ * Draw a previously-inserted image at its stored position/size. The actual
+ * pixel data lives in `Doc.images` (keyed by annotation id), not on the
+ * annotation itself; if the bitmap isn't in the map (e.g. a stale reference),
+ * skip silently rather than throwing.
+ */
+function drawImageAnnotation(
+  ctx: CanvasRenderingContext2D,
+  a: ImageAnnotation,
+  images: ReadonlyMap<string, ImageBitmap>,
+): void {
+  const bmp = images.get(a.id);
+  if (!bmp) return;
+  ctx.drawImage(bmp, a.at.x, a.at.y, a.width, a.height);
 }

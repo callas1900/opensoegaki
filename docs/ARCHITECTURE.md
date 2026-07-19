@@ -29,9 +29,9 @@ OpenSoegaki is a tray-resident screenshot annotation tool built on Tauri 2.
 
 The core design decision: **annotations are data, not pixels.**
 
-`src/editor/model.ts` defines `Annotation` (arrow / rect / text) as plain objects.
-The live canvas (`canvas.ts`) and the exporter (`exporter.ts`) both render the same
-model through one pure function (`render.ts`). Benefits:
+`src/editor/model.ts` defines `Annotation` (arrow / rect / text / highlight / badge /
+image) as plain objects. The live canvas (`canvas.ts`) and the exporter (`exporter.ts`)
+both render the same model through one pure function (`render.ts`). Benefits:
 
 - Undo/redo is a list snapshot, not a bitmap diff (`history.ts`)
 - Select/move/delete (below) and a re-editable ".soegaki" file format or SVG export
@@ -117,6 +117,65 @@ Hit-testing rules:
   in `canvas.ts` (`BASE_TOL_PX * (canvas.width / rect.width)`), since the canvas
   is CSS-scaled but `hittest.ts` itself stays unit-agnostic.
 
+## Inserting images as annotations
+
+Arbitrary images (logos, screenshots-of-screenshots, etc.) can be overlaid on
+top of the captured background as a first-class `"image"` annotation kind
+(`ImageAnnotation` in `model.ts`), rendered and exported through the same
+`renderAnnotations` path as every other shape. Three intake paths all funnel
+into one method, `Editor.insertImage(bitmap)`:
+
+1. **Toolbar button** (`#insert-image`) invokes the `pick_image` Rust command,
+   which shows a native file-open dialog filtered to image extensions and
+   returns the chosen file's raw bytes.
+2. **Drag-and-drop** onto the editor. Tauri's `dragDropEnabled` defaults to
+   `true`, which intercepts the OS drag before it ever reaches the DOM as
+   HTML5 `drop` events — so this is wired through
+   `getCurrentWebview().onDragDropEvent(...)` instead, filtering to the first
+   dropped path with an image extension and reading it via the
+   `read_image_file` command. The drop has dual behavior depending on editor
+   state: if a background is already loaded, the dropped image is inserted as
+   an annotation (as above); if the editor is empty, the dropped image becomes
+   the background instead, via the same `loadImage` path the capture button
+   and paste handler use.
+3. **Ctrl+Shift+V** reads the OS clipboard image via
+   `@tauri-apps/plugin-clipboard-manager`'s `readImage()` and decodes its RGBA
+   bytes into an `ImageBitmap`. This is deliberately distinct from plain
+   Ctrl+V, which keeps its existing background-replace semantics (see
+   "Capture flow" below) — the two are split by a `keydown`-vs-`paste` event
+   split with a `suppressNextPaste` flag so a single Ctrl+Shift+V keystroke
+   never also fires the plain-paste background-replace path.
+
+`insertImage` scales the bitmap to fit within 90% of the canvas (never
+upscaling a smaller image) and centers it, then commits a new
+`ImageAnnotation` through the same `history.push` + append path used by every
+other tool — so insertion is undoable like any other annotation.
+
+**Pixel storage: `Doc.images`.** Unlike every other annotation kind, an image
+annotation's pixels don't fit in a small JSON-shaped object. `Doc` carries a
+side-table, `images: Map<string, ImageBitmap>`, keyed by annotation id;
+`ImageAnnotation` itself stores only position/size (`at`, `width`, `height`).
+This map is a **monotonic session cache**: entries are added on
+`insertImage()` and never pruned by `setBackground`/`restore`. It is
+deliberately **excluded from history snapshots** — `history.ts` `structuredClone`s
+the annotation array per undo step, and `ImageBitmap` cannot be structurally
+cloned that way (nor would re-cloning a large bitmap per step be cheap); since
+the map is append-only and keyed by id, a `redo()` that brings an
+`ImageAnnotation` back into `doc.annotations` can always find its bitmap
+again in the same never-pruned map. `renderAnnotations` takes `images` as an
+explicit third parameter and silently skips drawing if an id's bitmap is
+missing, rather than throwing.
+
+**Scope note (AC #6):** placed images are selectable, movable, and deletable
+through the standard select tool — `hittest.ts`'s `hitsAnnotation` treats
+`"image"` as a filled-bounds hit, just like `"text"`, and `translateAnnotation`
+/ `deleteSelected` already handle them generically. Resize is deferred
+(TASK-29).
+
+**Future serialization (TASK-16):** a `.soegaki` file format will need to
+encode each image annotation's pixels alongside its id — the natural approach
+is one PNG blob per id, keyed the same way `Doc.images` is keyed today.
+
 ## IPC contract
 
 | Direction | Name | Payload | Purpose |
@@ -124,6 +183,8 @@ Hit-testing rules:
 | TS → Rust (command) | `capture_fullscreen` | none → returns base64 PNG string | Hide window, capture primary monitor, show window, return the shot |
 | TS → Rust (command) | `prepare_drag_file` | `png: number[]` → returns temp file path | Materialize export for OS drag |
 | TS → Rust (command) | `save_png` | `{ png: number[], defaultName: string }` → `string \| null` | Show native save dialog, write PNG; returns saved path, or `null` if the user cancelled |
+| TS → Rust (command) | `pick_image` | none → returns raw image bytes, or rejects `"CANCELLED"` | Native open-file dialog filtered to image extensions, for the insert-image toolbar button |
+| TS → Rust (command) | `read_image_file` | `{ path: string }` → returns raw image bytes | Read an image file already resolved to a path (drag-and-drop), rejecting non-image extensions |
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
 
@@ -133,7 +194,9 @@ is likewise pure `src/`; `save_png` is the only IPC addition on top of the
 original two commands. The crop tool (below) is also pure `src/` and
 introduces no IPC changes — including its v2 handle-based/mouse-only-apply
 revision, which is pure `src/` UI/interaction rework with no Rust or IPC
-surface touched.
+surface touched. Inserting images as annotations (above) adds the two
+commands in the table above, plus the `clipboard-manager:allow-read-image`
+capability for the Ctrl+Shift+V clipboard-image path.
 
 ## Keyboard shortcuts
 
@@ -142,6 +205,7 @@ surface touched.
 | `Ctrl+Z` / `Cmd+Z` | Undo |
 | `Ctrl+Shift+Z` / `Cmd+Shift+Z` | Redo |
 | `Ctrl+C` / `Cmd+C` | Copy exported PNG to clipboard |
+| `Ctrl+Shift+V` / `Cmd+Shift+V` | Insert clipboard image as an annotation (plain `Ctrl+V` still replaces the background) |
 | `Del` / `Backspace` | Delete the selected annotation (undoable) |
 | `Esc` | Reset the crop region to the full image while cropping, else deselect |
 | `Enter` | Apply the crop region (no-op on an unshrunk full-image region) |
@@ -222,8 +286,9 @@ the canvas context in `Editor.render()`, after selection chrome, so none of
 it is ever rasterized into an export. The toolbar's crop button uses an
 inline SVG crop-mark icon (`stroke="currentColor"`) rather than a text
 glyph, for legibility on both the panel background and the button's active
-accent state; it is the only toolbar button using SVG today — the rest
-remain Unicode glyphs.
+accent state; it and the **Insert image** button (`#insert-image`, next to
+Capture — see "Inserting images as annotations" above) are the toolbar
+buttons using SVG today — the rest remain Unicode glyphs.
 
 ## Share flow (drag-out)
 

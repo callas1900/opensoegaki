@@ -121,6 +121,46 @@ fn open_screen_recording_settings() -> Result<(), String> {
     permission::open_screen_recording_settings()
 }
 
+/// Allowed image file extensions (lowercase) for `pick_image`/`read_image_file`.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp"];
+
+/// Show a native open-file dialog filtered to image extensions and return the
+/// chosen file's raw bytes as an IPC `Response` (delivered to the frontend as
+/// an `ArrayBuffer`). Returns the `"CANCELLED"` sentinel error if the user
+/// dismisses the dialog, mirroring `save_png`'s async rfd pattern.
+#[tauri::command]
+async fn pick_image() -> Result<tauri::ipc::Response, String> {
+    let file = rfd::AsyncFileDialog::new()
+        .add_filter("Images", IMAGE_EXTENSIONS)
+        .pick_file()
+        .await;
+    match file {
+        Some(file) => {
+            let bytes = std::fs::read(file.path()).map_err(|e| e.to_string())?;
+            Ok(tauri::ipc::Response::new(bytes))
+        }
+        None => Err("CANCELLED".to_string()),
+    }
+}
+
+/// Read an arbitrary image file from disk (used for drag-and-drop, where the
+/// frontend already has a path from the OS). Rejects non-image extensions so
+/// this cannot be used to read arbitrary files.
+#[tauri::command]
+fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    match ext {
+        Some(ext) if IMAGE_EXTENSIONS.contains(&ext.as_str()) => {
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            Ok(tauri::ipc::Response::new(bytes))
+        }
+        _ => Err("Not an image file".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -130,7 +170,9 @@ pub fn run() {
             prepare_drag_file,
             capture_fullscreen,
             save_png,
-            open_screen_recording_settings
+            open_screen_recording_settings,
+            pick_image,
+            read_image_file
         ])
         .setup(|app| {
             // Tray icon with a minimal menu; closing the window hides to tray.

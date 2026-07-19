@@ -9,9 +9,12 @@ export type Point = { x: number; y: number };
 export type ToolKind = "arrow" | "rect" | "text" | "highlight" | "badge";
 export type Tool = ToolKind | "select" | "crop";
 
+/** Annotation kinds, including "image" — which is inserted via insertImage(), not the toolbar tool loop. */
+export type AnnotationKind = ToolKind | "image";
+
 interface AnnotationBase {
   id: string;
-  kind: ToolKind;
+  kind: AnnotationKind;
   color: string;
   strokeWidth: number;
 }
@@ -47,12 +50,33 @@ export interface BadgeAnnotation extends AnnotationBase {
   radius: number;  // baked from BADGE_RADIUS_PRESETS at creation
 }
 
-export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation | HighlighterAnnotation | BadgeAnnotation;
+export interface ImageAnnotation extends AnnotationBase {
+  kind: "image";
+  at: Point;      // top-left corner
+  width: number;
+  height: number;
+  // color/strokeWidth are inherited but unused placeholders, filled from DEFAULTS at creation.
+}
+
+export type Annotation =
+  | ArrowAnnotation
+  | RectAnnotation
+  | TextAnnotation
+  | HighlighterAnnotation
+  | BadgeAnnotation
+  | ImageAnnotation;
 
 /** Editor document: background bitmap + ordered annotation list. */
 export interface Doc {
   imageBitmap: ImageBitmap | null;
   annotations: Annotation[];
+  // Session-scoped cache of image-annotation bitmaps, keyed by annotation id.
+  // Monotonic: entries are added on insertImage() and never pruned, so undo
+  // followed by redo can always find the bitmap for a re-appearing
+  // ImageAnnotation. Deliberately kept out of history snapshots (which
+  // structuredClone the annotation list) — bitmaps are large and this map is
+  // append-only, so there is nothing to snapshot per step.
+  images: Map<string, ImageBitmap>;
 }
 
 export const PALETTE = ["#ED107B", "#FBB034", "#313187", "#00AFA5", "#00C0F3", "#434345", "#FFFFFF", "#000000"] as const;
@@ -96,6 +120,8 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number): Anno
     case "highlight":
       return { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
     case "badge":
+      return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+    case "image":
       return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
   }
 }

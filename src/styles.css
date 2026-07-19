@@ -16,10 +16,11 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #toolbar button {
   min-width: 34px; height: 34px; border: none; border-radius: 6px;
   background: transparent; color: var(--fg); font-size: 16px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 #toolbar button:hover { background: #3a3d42; }
 #toolbar button.active { background: var(--accent); }
-.tool svg { vertical-align: middle; }
+#toolbar button svg { display: block; }
 .sep { width: 1px; height: 22px; background: #45484e; margin: 0 4px; }
 
 #palette { display: flex; gap: 5px; }

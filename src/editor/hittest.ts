@@ -44,6 +44,8 @@ export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Boun
     }
     case "badge":
       return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
+    case "image":
+      return { x: a.at.x, y: a.at.y, w: a.width, h: a.height };
   }
 }
 
@@ -90,6 +92,13 @@ function hitsAnnotation(
     }
     case "badge":
       return Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance;
+    case "image": {
+      // Images are selectable/movable/deletable via the standard select-tool
+      // machinery (translateAnnotation and deleteSelected already handle them);
+      // only resize is deferred (TASK-29).
+      const b = boundsOf(a, measure);
+      return pointInBounds(p, inflate(b, tolerance));
+    }
   }
 }
 
