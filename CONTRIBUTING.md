@@ -29,11 +29,16 @@ We use **pnpm only** — please do not commit `package-lock.json` or `yarn.lock`
 
 To cut a release:
 
-1. Set the same `X.Y.Z` version in **both** `src-tauri/Cargo.toml` (`[package].version`)
-   and `package.json` (`version`).
-2. Commit the version bump.
-3. Tag the commit: `git tag vX.Y.Z`
-4. Push the tag: `git push origin vX.Y.Z`
+1. `pnpm version:bump X.Y.Z` — updates both `src-tauri/Cargo.toml`
+   (`[package].version`) and `package.json` (`version`) to the same value.
+   This only edits files; it does not commit, tag, or push.
+2. Review the diff, then commit, tag, and push:
+   ```
+   git add src-tauri/Cargo.toml package.json
+   git commit -m "version up to vX.Y.Z"
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
 
 Pushing the tag triggers the release workflow (`.github/workflows/release.yml`), which
 builds Windows and macOS bundles via `tauri-action` and attaches them to a GitHub Release.
@@ -44,6 +49,20 @@ push over an existing tag.
 Note: `src-tauri/tauri.conf.json` intentionally has no `version` field; Tauri falls back
 to `src-tauri/Cargo.toml`'s version, which is the single source of truth for the bundle
 version.
+
+## Previewing a build
+
+To check the actual Windows/macOS installer bundles before deciding to tag a release:
+
+1. Run the **Preview build** workflow manually from the GitHub Actions tab, choosing the
+   branch or commit you want to preview.
+2. It builds the same Windows and macOS installer bundles a tagged release would
+   produce, using whatever version is currently in `Cargo.toml` — no tag needed.
+3. Download the `preview-*` artifacts from the workflow run page to inspect the real
+   installers.
+
+These artifacts are private to the repo, expire after 7 days, and never create a GitHub
+Release (not even a draft) — this is purely a way to inspect build output ahead of time.
 
 ## AI-assisted development
 

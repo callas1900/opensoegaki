@@ -1,0 +1,58 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      release-id:
+        description: >-
+          GitHub Release id to upload bundles to. When empty, bundles are
+          uploaded as build artifacts instead (preview mode).
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+            args: --target aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - name: Build and attach to release
+        if: inputs.release-id != ''
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ inputs.release-id }}
+          args: ${{ matrix.args }}
+      - name: Build (preview)
+        if: inputs.release-id == ''
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+      - name: Upload preview artifact
+        if: inputs.release-id == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.os }}-${{ github.run_number }}-${{ github.sha }}
+          path: ${{ join(fromJSON(steps.tauri.outputs.artifactPaths), '\n') }}
+          retention-days: 7
+          if-no-files-found: error

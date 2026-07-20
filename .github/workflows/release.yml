@@ -54,31 +54,10 @@ jobs:
 
   release:
     needs: create-release
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-          - os: macos-latest
-            args: --target aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - run: pnpm install --frozen-lockfile
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: ${{ matrix.args }}
+    uses: ./.github/workflows/_build.yml
+    with:
+      release-id: ${{ needs.create-release.outputs.release_id }}
+    secrets: inherit
 
   # Both platform builds succeeded and uploaded their assets to the draft
   # release created above; flip it to published so the tag-push flow remains

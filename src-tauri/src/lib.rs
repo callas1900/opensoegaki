@@ -202,12 +202,14 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building OpenSoegaki")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // Remove the temp drag-file directory however the process ends
             // (tray quit, OS shutdown, etc.), not just on the tray Quit path.
-            if let tauri::RunEvent::Exit = event {
-                cleanup_temp(app);
-            }
+            tauri::RunEvent::Exit => cleanup_temp(app),
+            // macOS only: re-show the window when the user clicks the Dock icon
+            // with no window visible (RunEvent::Reopen never fires on Windows).
+            tauri::RunEvent::Reopen { .. } => show_main_window(app),
+            _ => {}
         });
 }
 

@@ -1,0 +1,12 @@
+name: Preview build
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
