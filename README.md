@@ -4,28 +4,31 @@
 
 OpenSoegaki is a spiritual successor to the discontinued Skitch for Windows. It lives in
 your system tray; shoot a screenshot with the OS tool (Win+Shift+S) and paste it in with
-Ctrl+V to annotate it with arrows, boxes and text, then hand the result to any other app with
-a single drag.
+Ctrl+V, mark it up with arrows, highlights, numbered steps and more, then hand the result
+to any other app with a single drag — all in seconds.
 
-> **Status:** 🚧 Early development (MVP). Windows 11 first; macOS support is planned.
+![Annotating a screenshot in OpenSoegaki](docs/assets/hero.png)
 
-## Features (MVP scope)
+> **Status:** 🚧 Early development. Windows 11 first; macOS support is planned.
 
-- **Paste to annotate** — paste a screenshot from the clipboard with `Ctrl+V`; a
-  **Capture** toolbar button is also available for the full screen
-- **Annotate** — outlined arrows, rectangles, and text that stay readable on any background
+## Features
+
+- **Paste to annotate** — paste a screenshot from the clipboard with `Ctrl+V` (shoot it
+  first with the OS tool, e.g. `Win+Shift+S`); a **Capture** toolbar button grabs the
+  full screen too
+- **Annotate** — outlined **arrows**, **rectangles**, in-canvas **text**, a freehand
+  **highlighter**, and **numbered step badges**
+- **Insert images** — add a screenshot, logo, or diagram as its own annotation object,
+  via the toolbar button, `Ctrl+Shift+V`, or drag-and-drop
+- **Color & size presets** — an 8-color palette and S/M/L size presets apply to stroke
+  width and font size
+- **Select, move, and delete** — click an annotation to select it, drag to reposition,
+  `Delete`/`Backspace` to remove
+- **Crop** — trim the image in-editor; `Enter` applies, `Esc` cancels
 - **Undo / Redo** — annotations are objects, not pixels, until you export
 - **Share** — drag the tab at the bottom of the window straight into Slack, a browser,
-  an email draft, or any drop target; or hit `Ctrl+C` to copy the PNG to the clipboard
-
-## Why Tauri?
-
-OpenSoegaki is built with [Tauri 2](https://tauri.app) (Rust core + TypeScript/Canvas UI):
-
-- ~10 MB installer and low idle memory — right-sized for an always-resident tray utility
-- Screen capture handled natively in Rust via [`xcap`](https://crates.io/crates/xcap)
-- The same codebase targets Windows, macOS and Linux, keeping the door open for the
-  planned macOS release
+  an email draft, or any drop target; `Ctrl+C` copies the PNG to the clipboard, or
+  `Ctrl+S` saves it to disk
 
 ## Download & install
 
@@ -44,6 +47,35 @@ Bundles are currently **unsigned**:
   ```
 
   Note: the macOS build currently targets Apple Silicon (aarch64) only.
+
+## Hotkeys
+
+OpenSoegaki registers no global (system-wide) hotkeys; all shortcuts below are
+in-app only, active while the OpenSoegaki window has focus.
+
+| Action                                        | Windows/Linux             | macOS                   |
+| --------------------------------------------- | ------------------------- | ----------------------- |
+| Paste screenshot (replaces the background)    | `Ctrl+V`                  | `Cmd+V`                 |
+| Insert clipboard image as an annotation       | `Ctrl+Shift+V`            | `Cmd+Shift+V`           |
+| Copy result PNG to clipboard                  | `Ctrl+C`                  | `Cmd+C`                 |
+| Save PNG                                      | `Ctrl+S`                  | `Cmd+S`                 |
+| Undo / Redo                                   | `Ctrl+Z` / `Ctrl+Shift+Z` | `Cmd+Z` / `Cmd+Shift+Z` |
+| Delete selected annotation                    | `Delete` / `Backspace`    | `Delete` / `Backspace`  |
+| Cancel crop / clear selection / close popover | `Esc`                     | `Esc`                   |
+| Apply pending crop                            | `Enter`                   | `Enter`                 |
+
+On macOS, the first capture requires granting the **Screen Recording** permission
+(System Settings → Privacy & Security → Screen Recording); macOS only applies a newly
+granted permission after you **restart OpenSoegaki**.
+
+## Why Tauri?
+
+OpenSoegaki is built with [Tauri 2](https://tauri.app) (Rust core + TypeScript/Canvas UI):
+
+- ~10 MB installer and low idle memory — right-sized for an always-resident tray utility
+- Screen capture handled natively in Rust via [`xcap`](https://crates.io/crates/xcap)
+- The same codebase targets Windows, macOS and Linux, keeping the door open for the
+  planned macOS release
 
 ## Getting started (development)
 
@@ -65,27 +97,11 @@ Build a release bundle:
 pnpm tauri build
 ```
 
-## Default hotkeys
-
-OpenSoegaki registers no global (system-wide) hotkeys; all shortcuts below are
-in-app only, active while the OpenSoegaki window has focus.
-
-| Action                  | Windows/Linux           | macOS                   |
-| ----------------------- | ----------------------- | ----------------------- |
-| Paste screenshot        | `Ctrl+V`                | `Cmd+V`                 |
-| Copy result to clipboard| `Ctrl+C` (in editor)    | `Cmd+C` (in editor)     |
-| Save                    | `Ctrl+S`                | `Cmd+S`                 |
-| Undo / Redo             | `Ctrl+Z` / `Ctrl+Shift+Z`| `Cmd+Z` / `Cmd+Shift+Z`|
-
-On macOS, the first capture requires granting the **Screen Recording** permission
-(System Settings → Privacy & Security → Screen Recording); macOS only applies a newly
-granted permission after you **restart OpenSoegaki**.
-
 ## Project layout
 
 ```
-src/           TypeScript frontend (annotation editor, capture overlay)
-src-tauri/     Rust core (tray, screen capture, drag-out)
+src/           TypeScript frontend — editor/ (annotation object model, canvas, rendering), ui/ (toolbar popovers)
+src-tauri/     Rust core (tray, screen capture, clipboard, drag-out)
 docs/          Architecture and design documents
 .claude/       AI-assisted development configuration (Claude Code agents)
 ```
