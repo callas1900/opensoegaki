@@ -207,7 +207,9 @@ pub fn run() {
             // (tray quit, OS shutdown, etc.), not just on the tray Quit path.
             tauri::RunEvent::Exit => cleanup_temp(app),
             // macOS only: re-show the window when the user clicks the Dock icon
-            // with no window visible (RunEvent::Reopen never fires on Windows).
+            // with no window visible. The Reopen variant itself is cfg-gated to
+            // macOS in tauri, so this arm must be compiled out elsewhere.
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });

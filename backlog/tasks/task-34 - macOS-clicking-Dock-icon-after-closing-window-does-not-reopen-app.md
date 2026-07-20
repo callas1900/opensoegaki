@@ -4,7 +4,7 @@ title: 'macOS: clicking Dock icon after closing window does not reopen app'
 status: In Progress
 assignee: []
 created_date: '2026-07-20 07:01'
-updated_date: '2026-07-20 15:54'
+updated_date: '2026-07-20 17:38'
 labels:
   - platform
   - macos
@@ -24,11 +24,11 @@ Likely cause: the Tauri app has no macOS "reopen" / activation handler (the `NSA
 macOS only — does not affect Windows.
 
 ---
-Implementation note (2026-07-21): Fixed by handling `tauri::RunEvent::Reopen` in the `.run()` closure in `src-tauri/src/lib.rs`, calling the existing `show_main_window()` helper (already used by the tray "Open" menu item). `RunEvent::Reopen` is macOS-only in Tauri 2 (never emitted on Windows), so no `#[cfg(target_os = "macos")]` guard was needed for AC #2.
+Implementation note (2026-07-21): Fixed by handling `tauri::RunEvent::Reopen` in the `.run()` closure in `src-tauri/src/lib.rs`, calling the existing `show_main_window()` helper (already used by the tray "Open" menu item). The match arm carries `#[cfg(target_os = "macos")]`: the `Reopen` variant is cfg-gated to macOS in the tauri crate itself, so without the attribute the code does not compile on Windows (E0599 — caught by CI clippy on windows-latest after the first attempt landed without the guard; docs.rs "Available on macOS only" means the variant does not exist on other targets, not merely that it never fires). With the guard, the arm is compiled out on Windows and behavior there is unchanged (AC #2).
 
 AC #1 wording clarified with user: `win.hide()`/`win.show()` never reload the webview, so the frontend's last state (e.g. an in-progress annotation) is preserved across the hide/show cycle rather than reset to the welcome screen. Forcing a reset would discard unsaved user work, which conflicts with the app's non-destructive design. User confirmed (2026-07-21): preserve current state on reopen; do not force a welcome-screen reset. AC #1 should be read as "the window reopens" — no frontend change was made for this task.
 
-Reviewed by `reviewer` agent: no blocking findings, no regression against Done tasks TASK-6/TASK-3/TASK-14. `cargo fmt` clean; `cargo clippy`/build could not run in this WSL environment (pre-existing wayland-sys/pkg-config gap, unrelated to this change).
+Reviewed by `reviewer` agent: no blocking findings, no regression against Done tasks TASK-6/TASK-3/TASK-14. `cargo fmt` clean; `cargo clippy`/build could not run in this WSL environment (pre-existing wayland-sys/pkg-config gap, unrelated to this change) — Windows compile is verified by CI's clippy job, macOS compile by CI's rust-macos-check job.
 
 Remains In Progress pending manual macOS (and Windows smoke-test) verification via `pnpm tauri dev`, per this repo's Done-means-verified policy.
 <!-- SECTION:DESCRIPTION:END -->
