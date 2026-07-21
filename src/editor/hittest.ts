@@ -93,9 +93,9 @@ function hitsAnnotation(
     case "badge":
       return Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance;
     case "image": {
-      // Images are selectable/movable/deletable via the standard select-tool
-      // machinery (translateAnnotation and deleteSelected already handle them);
-      // only resize is deferred (TASK-29).
+      // Images are selectable/movable/deletable/resizable via the standard
+      // select-tool machinery (translateAnnotation, deleteSelected and
+      // resize.ts's applyResize all handle "image" generically).
       const b = boundsOf(a, measure);
       return pointInBounds(p, inflate(b, tolerance));
     }

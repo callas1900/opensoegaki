@@ -117,6 +117,74 @@ Hit-testing rules:
   in `canvas.ts` (`BASE_TOL_PX * (canvas.width / rect.width)`), since the canvas
   is CSS-scaled but `hittest.ts` itself stays unit-agnostic.
 
+## Resizing selected annotations
+
+`src/editor/resize.ts` (TASK-29) is a pure module — same import-boundary
+discipline as `crop.ts`/`hittest.ts`: DOM-free, ctx-free, and deliberately
+**never imported by `exporter.ts`**. It owns handle layout, hit-testing, and
+per-kind resize transforms:
+
+- `resizeHandlesFor(a, bounds)` returns the `HandleSpec[]` for an annotation,
+  positioned from the `Bounds` the caller already has via `hittest.ts`'s
+  `boundsOf`. Box kinds (rect, image) get all 8 corner+edge handles; text and
+  badge get the 4 corners only; arrow's 2 handles are its `from`/`to` points
+  read directly off the annotation (not the normalized bounds), so each
+  endpoint keeps its own identity. **Highlight returns `[]`** — bbox-scaling a
+  freehand polyline would distort the stroke shape unpredictably, so it stays
+  move/delete-only, same rationale as its resize exemption.
+- `handleAt(handles, p, hitRadius)` is the nearest-within-radius pick, the
+  same pattern as `crop.ts`'s corner `handleAt`.
+- `applyResize(original, bounds, handle, pointer, shiftKey)` returns a new
+  annotation for the dragged handle + pointer position — never mutates
+  `original`. Per-kind transforms (no clamping to canvas bounds, consistent
+  with move — only per-kind min/max and no-flip-past-anchor):
+  - **rect**: corner drag pins the diagonally opposite corner and resizes
+    freely; edge drag moves only that edge; **Shift on a corner locks the
+    pre-drag aspect ratio**; minimum 8px per axis (`MIN_RECT_PX`).
+  - **image**: same 8-handle layout as rect, but corner drag is
+    **aspect-locked by default and Shift frees it** — the inverse of rect's
+    modifier. Rationale: the modifier is the *less-common* intent per kind —
+    stretching an image out of proportion usually looks broken, so it is
+    locked by default; free-distortion is normal for a rect. Minimum 16px per
+    axis (`MIN_IMAGE_PX`).
+  - **arrow**: only 2 handles (`from`/`to`); the dragged endpoint follows the
+    pointer, the other stays fixed; **Shift snaps the dragged endpoint's
+    angle** (relative to the fixed one) to 45° increments, magnitude
+    unchanged; updates that would bring the endpoints closer than
+    `MIN_ARROW_LEN` (4px) are clamped along the same direction (or rejected
+    outright if the pointer lands exactly on the fixed endpoint).
+  - **text**: 4 corner handles; the vertical distance from the pointer to the
+    pinned (diagonally opposite) corner, as a ratio of the pre-drag bounds
+    height, scales `fontSize` (clamped to 8–400); the effective scale is then
+    recomputed from the *clamped* fontSize so `at` repositions consistently
+    with the actually-rendered size, keeping the pinned corner fixed. Shift
+    has no effect — text has no free-aspect concept distinct from its single
+    `fontSize` scalar.
+  - **badge**: 4 corner handles; `radius = clamp(max(|dx|,|dy|) from center, 8,
+    400)`; `at` and `number` never change.
+  - **highlight**: `applyResize` returns `original` unchanged (handles are
+    already `[]`, so a drag can never even start).
+
+**`canvas.ts` wiring:** a `this.resize` drag-state field mirrors `this.move` —
+armed in the select-tool `onDown` branch when a resize handle hit wins over
+reselecting an overlapping annotation (checked *before* the plain `hitTest`
+reselect path), holding a `structuredClone` of the pre-drag annotation plus
+its pre-drag `boundsOf` so every `onMove` frame recomputes the resize from the
+same fixed base rather than incrementally (same anti-drift rationale as
+`move`). `onMove`'s priority order is **resize → move → crop drag → draft →
+hover**; the history push happens lazily, once, on the first frame whose
+result actually differs from the pre-drag original (a cheap `JSON.stringify`
+deep-equal — same lazy-push pattern as `move`'s `dx !== 0 || dy !== 0` check,
+just without a scalar delta to compare). `drawSelectionOverlay` draws the
+handles as screen-constant-size squares (`HANDLE_DRAW_PX` × `cropScale()`,
+same styling as the crop tool's corner handles) at the exact positions
+`resizeHandlesFor` reports — the same unpadded `boundsOf` used for hit-testing,
+so drawn position and hit region never drift apart. Hovering a handle while
+the select tool is active shows a matching directional cursor
+(`cursorForResizeHandle`: nwse/nesw/ns/ew for box handles, "move" for arrow
+endpoints, since dragging an endpoint repositions a point rather than
+resizing along an axis).
+
 ## Inserting images as annotations
 
 Arbitrary images (logos, screenshots-of-screenshots, etc.) can be overlaid on
@@ -166,10 +234,11 @@ again in the same never-pruned map. `renderAnnotations` takes `images` as an
 explicit third parameter and silently skips drawing if an id's bitmap is
 missing, rather than throwing.
 
-**Scope note (AC #6):** placed images are selectable, movable, and deletable
-through the standard select tool — `hittest.ts`'s `hitsAnnotation` treats
-`"image"` as a filled-bounds hit, just like `"text"`, and `translateAnnotation`
-/ `deleteSelected` already handle them generically. Resize is deferred
+**Scope note (AC #6):** placed images are selectable, movable, deletable and
+resizable through the standard select tool — `hittest.ts`'s `hitsAnnotation`
+treats `"image"` as a filled-bounds hit, just like `"text"`, and
+`translateAnnotation`/`deleteSelected` already handle them generically; resize
+is handled generically too, see "Resizing selected annotations" below
 (TASK-29).
 
 **Future serialization (TASK-16):** a `.soegaki` file format will need to
@@ -188,10 +257,13 @@ is one PNG blob per id, keyed the same way `Doc.images` is keyed today.
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
 
-The selection tool (hit-test/move/delete) is a pure `src/` feature and introduces
-no IPC changes; the table above is unaffected. The inline text editor (below)
-is likewise pure `src/`; `save_png` is the only IPC addition on top of the
-original two commands. The crop tool (below) is also pure `src/` and
+The selection tool (hit-test/move/delete/resize) is a pure `src/` feature and
+introduces no IPC changes; the table above is unaffected — including its
+TASK-29 resize-handle addition, which is pure geometry in `resize.ts` plus
+`canvas.ts` pointer-event wiring, no Rust or IPC surface touched. The inline
+text editor (below) is likewise pure `src/`, including its TASK-23
+double-click re-edit addition; `save_png` is the only IPC addition on top of
+the original two commands. The crop tool (below) is also pure `src/` and
 introduces no IPC changes — including its v2 handle-based/mouse-only-apply
 revision, which is pure `src/` UI/interaction rework with no Rust or IPC
 surface touched. Inserting images as annotations (above) adds the two
@@ -266,6 +338,21 @@ of the former blocking `window.prompt`. The overlay is DOM-only — appended to
 like the committed text but can never be rasterized into an export. It is
 single-line (Enter commits, Esc cancels, blur commits); a non-blank commit
 produces exactly one undoable `TextAnnotation`.
+
+**Double-click to re-edit (TASK-23):** with the **Select** tool active,
+double-clicking (`e.detail >= 2`) an existing text annotation reopens the same
+overlay pre-filled with its current text/color/fontSize, via
+`openTextEditor(at, { editId, value, color, fontSize })`. Detection happens in
+`onDown`, *before* `setPointerCapture` — a captured pointer would otherwise
+arm a select/move drag underneath the reopened editor. `render()` skips
+drawing the `editId` annotation while its editor is open, so it is never
+double-drawn underneath the input. `commitTextEditor` branches on
+`textEdit.editId`: a blank commit **deletes** the annotation (push + filter,
+mirroring `deleteSelected()`); an unchanged value is a no-op (no history
+push); a changed value pushes once and replaces the annotation in place
+(`{ ...existing, text }`, keeping `id`/`color`/`fontSize`/`at`/`strokeWidth`)
+— a single undo step. Escape still cancels with no history push, and the
+`editId === null` new-text path (TASK-7, above) is unchanged.
 
 An **S/M/L size control** next to the palette picks the stroke width (arrow/rect)
 and font size (text) used for *new* annotations; it never restyles existing ones.

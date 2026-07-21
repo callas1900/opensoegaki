@@ -48,11 +48,25 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
+      - name: Collect preview artifact paths
+        if: inputs.release-id == ''
+        id: paths
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          # Actions expressions cannot emit a real newline ('\n' is literal),
+          # so convert the JSON array to lines here instead of with join().
+          {
+            echo 'paths<<EOF'
+            jq -r '.[]' <<< "$ARTIFACT_PATHS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
       - name: Upload preview artifact
         if: inputs.release-id == ''
         uses: actions/upload-artifact@v4
         with:
           name: preview-${{ matrix.os }}-${{ github.run_number }}-${{ github.sha }}
-          path: ${{ join(fromJSON(steps.tauri.outputs.artifactPaths), '\n') }}
+          path: ${{ steps.paths.outputs.paths }}
           retention-days: 7
           if-no-files-found: error

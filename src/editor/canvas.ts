@@ -20,8 +20,14 @@ import {
 } from "./model";
 import { fontString, renderAnnotations } from "./render";
 import { History, type DocSnapshot } from "./history";
-import { boundsOf, hitTest } from "./hittest";
+import { boundsOf, hitTest, type Bounds } from "./hittest";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
+import {
+  resizeHandlesFor,
+  handleAt as resizeHandleAt,
+  applyResize,
+  type ResizeHandle,
+} from "./resize";
 
 /** Selection hit-test tolerance in CSS px; scale-compensated to bitmap px at the call site. */
 const BASE_TOL_PX = 6;
@@ -51,6 +57,11 @@ export class Editor {
   // clone so each move frame recomputes the translation from a fixed base
   // (never incrementally), avoiding drift.
   private move: { original: Annotation; anchor: Point; moved: boolean } | null = null;
+  // Armed while a select-tool resize handle drag is in progress; mirrors
+  // `move` above — `original`/`bounds` are the pre-drag clone and its
+  // `boundsOf`, fixed for the whole gesture so each move frame recomputes the
+  // resize from the same base (never incrementally, avoiding drift).
+  private resize: { handle: ResizeHandle; original: Annotation; bounds: Bounds; changed: boolean } | null = null;
   // Crop tool state: the current region (starts as the full image), the
   // corner handle actively being dragged (if any), and the owned floating
   // ✓/✗ controls overlay + its resize-reposition handler. Never part of doc,
@@ -63,11 +74,16 @@ export class Editor {
   } | null = null;
   private readonly ctx: CanvasRenderingContext2D;
   // Transient DOM overlay for the text tool; never part of doc, history, or renderAnnotations.
+  // `editId` is set when re-editing an existing TextAnnotation (TASK-23,
+  // double-click) and null for a brand-new text annotation (TASK-7);
+  // `render()` skips drawing the `editId` annotation while its editor is open
+  // so it isn't double-drawn underneath the input.
   private textEdit: {
     input: HTMLInputElement;
     at: Point;
     color: string;
     fontSize: number;
+    editId: string | null;
     reposition: () => void;
   } | null = null;
 
@@ -142,6 +158,7 @@ export class Editor {
     this.doc.annotations = [];
     this.selectedId = null;
     this.move = null;
+    this.resize = null;
     this.teardownCrop();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
@@ -182,6 +199,7 @@ export class Editor {
     // if it does by coincidence, the highlight would be misleading.
     this.selectedId = null;
     this.move = null;
+    this.resize = null;
     this.teardownCrop();
     if (snapshot.imageBitmap) {
       this.canvas.width = snapshot.imageBitmap.width;
@@ -200,7 +218,11 @@ export class Editor {
     const { ctx, canvas } = this;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (this.doc.imageBitmap) ctx.drawImage(this.doc.imageBitmap, 0, 0);
-    renderAnnotations(ctx, this.doc.annotations, this.doc.images);
+    // While re-editing an existing text annotation, skip drawing it here —
+    // the DOM input overlay is its live stand-in (see `textEdit` doc comment).
+    const editId = this.textEdit?.editId ?? null;
+    const list = editId ? this.doc.annotations.filter((a) => a.id !== editId) : this.doc.annotations;
+    renderAnnotations(ctx, list, this.doc.images);
     if (this.draft) renderAnnotations(ctx, [this.draft], this.doc.images);
     // Selection chrome is drawn last, directly on the live canvas context only —
     // never through renderAnnotations, so it can never reach exportPng().
@@ -228,6 +250,7 @@ export class Editor {
   clearSelection(): void {
     this.selectedId = null;
     this.move = null;
+    this.resize = null;
     this.render();
   }
 
@@ -356,6 +379,7 @@ export class Editor {
     this.canvas.height = rect.h;
     this.selectedId = null;
     this.move = null;
+    this.resize = null;
     // Crop mode stays active on the newly-cropped image: re-arm the region to
     // the new full image so the user can immediately crop again. Guarded:
     // switching tools during the await tears crop down without changing the
@@ -373,7 +397,15 @@ export class Editor {
       : this.doc.annotations.find((a) => a.id === this.selectedId);
   }
 
-  /** Dashed marquee around the selected annotation's bounds. Not exported (see render()). */
+  /**
+   * Dashed marquee around the selected annotation's bounds, plus its resize
+   * handles (TASK-29). Not exported (see render()). Handles are square
+   * grabbers at screen-constant size (same styling/scale compensation as the
+   * crop tool's corner handles), positioned from the same unpadded `boundsOf`
+   * used for resize hit-testing in onDown/onMove/hover, so drawn position and
+   * hit region always agree. `resizeHandlesFor` returns `[]` for highlight
+   * annotations, so they draw no handles here.
+   */
   private drawSelectionOverlay(a: Annotation): void {
     const { ctx } = this;
     const b = boundsOf(a, ctx);
@@ -391,6 +423,16 @@ export class Editor {
     ctx.strokeStyle = PALETTE[0];
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
+
+    const side = HANDLE_DRAW_PX * this.cropScale();
+    const half = side / 2;
+    ctx.lineWidth = 1.5;
+    for (const handle of resizeHandlesFor(a, b)) {
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.fillRect(handle.pos.x - half, handle.pos.y - half, side, side);
+      ctx.strokeStyle = PALETTE[0];
+      ctx.strokeRect(handle.pos.x - half, handle.pos.y - half, side, side);
+    }
   }
 
   /**
@@ -526,6 +568,37 @@ export class Editor {
     return h === "nw" || h === "se" ? "nwse-resize" : "nesw-resize";
   }
 
+  /**
+   * Resize cursor for a select-tool resize handle (TASK-29). Box handles map
+   * to the matching cardinal/diagonal cursor; arrow endpoints use "move" —
+   * dragging either endpoint repositions a point, not a directional resize.
+   */
+  private cursorForResizeHandle(h: ResizeHandle): string {
+    switch (h) {
+      case "nw":
+      case "se":
+        return "nwse-resize";
+      case "ne":
+      case "sw":
+        return "nesw-resize";
+      case "n":
+      case "s":
+        return "ns-resize";
+      case "e":
+      case "w":
+        return "ew-resize";
+      case "from":
+      case "to":
+        return "move";
+    }
+  }
+
+  /** Resize handles for the currently selected annotation, or [] if nothing is selected. */
+  private selectedHandles(): ReturnType<typeof resizeHandlesFor> {
+    const selected = this.selectedAnnotation();
+    return selected ? resizeHandlesFor(selected, boundsOf(selected, this.ctx)) : [];
+  }
+
   private onDown(p: Point, e: PointerEvent): void {
     if (!this.hasImage()) return;
     const tool = this.tool;
@@ -557,9 +630,49 @@ export class Editor {
       return;
     }
 
+    // A pointerdown elsewhere on the canvas while the text editor is still
+    // open (e.g. a resize-handle click, which lands on the canvas rather
+    // than the <input>) must see already-committed state: otherwise a
+    // hitTest/structuredClone taken here could arm resize/move against the
+    // pre-edit annotation, and the input's blur -> commitTextEditor() (whose
+    // ordering relative to this handler is not guaranteed) could then apply
+    // *after*, so the subsequent resize/move would silently overwrite the
+    // just-typed edit. Commit synchronously, before any hit-testing.
+    if (tool === "select" && this.textEdit) {
+      this.commitTextEditor();
+    }
+
+    // TASK-23: a double-click on a text annotation re-opens the inline editor
+    // pre-filled with its current text. Detected here, before
+    // setPointerCapture, because a captured pointer would otherwise arm a
+    // select/move drag underneath the reopened editor. preventDefault() is
+    // the same focus guard as the text-tool branch above.
+    if (tool === "select" && e.detail >= 2) {
+      const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
+      if (hit && hit.kind === "text") {
+        e.preventDefault();
+        this.openTextEditor(hit.at, { editId: hit.id, value: hit.text, color: hit.color, fontSize: hit.fontSize });
+        return;
+      }
+    }
+
     this.canvas.setPointerCapture(e.pointerId);
 
     if (tool === "select") {
+      // A resize handle hit wins over reselecting an overlapping annotation:
+      // check the currently selected annotation's handles first.
+      const selected = this.selectedAnnotation();
+      if (selected) {
+        const bounds = boundsOf(selected, this.ctx);
+        const h = resizeHandleAt(resizeHandlesFor(selected, bounds), p, this.handleHitRadius());
+        if (h) {
+          this.resize = { handle: h, original: structuredClone(selected), bounds, changed: false };
+          this.render();
+          return;
+        }
+      }
+
+      this.resize = null;
       const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
       if (hit) {
         this.selectedId = hit.id;
@@ -599,6 +712,30 @@ export class Editor {
 
   private onMove(p: Point, shiftKey = false): void {
     const tool = this.tool;
+
+    // Priority: resize > move > crop drag > draft > hover.
+    if (this.resize) {
+      const { handle, original, bounds } = this.resize;
+      const updated = applyResize(original, bounds, handle, p, shiftKey);
+      if (!this.resize.changed && !this.annotationsEqual(updated, original)) {
+        // Push before mutate: capture the pre-resize array on the first frame
+        // that actually changes geometry (same lazy pattern as `move` above).
+        this.resize.changed = true;
+        this.history.push(this.snapshot());
+      }
+      if (this.resize.changed) {
+        // Keyed off the armed gesture's own id, not `selectedId` — the two
+        // should always agree, but this is the more robust source of truth
+        // for "which annotation is this drag replacing" (hardens TASK-23's
+        // interaction with TASK-29: selectedId can change or clear out from
+        // under an in-flight gesture in ways this drag state should not
+        // follow).
+        this.doc.annotations = this.doc.annotations.map((a) => (a.id === original.id ? updated : a));
+      }
+      this.canvas.style.cursor = this.cursorForResizeHandle(handle);
+      this.render();
+      return;
+    }
 
     if (this.move) {
       const dx = p.x - this.move.anchor.x;
@@ -646,15 +783,31 @@ export class Editor {
     }
 
     if (tool === "select") {
-      const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
-      this.canvas.style.cursor = hit ? "move" : "default";
+      const resizeHover = resizeHandleAt(this.selectedHandles(), p, this.handleHitRadius());
+      if (resizeHover) {
+        this.canvas.style.cursor = this.cursorForResizeHandle(resizeHover);
+      } else {
+        const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
+        this.canvas.style.cursor = hit ? "move" : "default";
+      }
     } else if (tool === "crop" && this.crop) {
       const h = handleAt(p, this.crop.rect, this.handleHitRadius());
       this.canvas.style.cursor = h ? this.cursorForHandle(h) : "default";
     }
   }
 
+  /** Cheap deep-equality for plain annotation data (no functions/Maps/bitmaps in the model itself), used to detect the first resize frame that actually changes geometry. */
+  private annotationsEqual(a: Annotation, b: Annotation): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
   private onUp(): void {
+    if (this.resize) {
+      this.resize = null;
+      this.canvas.style.cursor = this.tool === "select" ? "default" : "crosshair";
+      return;
+    }
+
     if (this.move) {
       this.move = null;
       // The pointer hasn't necessarily moved since the last hover check, so
@@ -694,18 +847,38 @@ export class Editor {
   // transient DOM only: never part of doc, never in history, never rendered
   // through renderAnnotations (so it can never be rasterized into an export).
 
-  private openTextEditor(at: Point): void {
+  /**
+   * Open the inline text editor at `at`. With no `opts`, this is the TASK-7
+   * new-text flow: color/fontSize come from the toolbar's current settings.
+   * With `opts` (TASK-23 double-click re-edit), the editor is pre-filled from
+   * an existing `TextAnnotation` — `editId` routes `commitTextEditor` into
+   * edit-mode semantics (see there) instead of creating a new annotation.
+   */
+  private openTextEditor(at: Point, opts?: { editId: string; value: string; color: string; fontSize: number }): void {
     this.commitTextEditor(); // idempotent: commit any already-open editor first
 
     const input = document.createElement("input");
     input.className = "text-editor";
-    const color = this.color;
-    const fontSize = this.fontSize;
+    const color = opts?.color ?? this.color;
+    const fontSize = opts?.fontSize ?? this.fontSize;
+    const editId = opts?.editId ?? null;
     const reposition = () => this.positionTextEditor();
-    this.textEdit = { input, at, color, fontSize, reposition };
+    this.textEdit = { input, at, color, fontSize, editId, reposition };
+
+    if (opts) {
+      // Edit mode (TASK-23): drop the selection/resize/move gesture state so
+      // no marquee or resize handles are drawn over the annotation while its
+      // editor is open — a handle click during edit would otherwise arm a
+      // resize against a structuredClone taken *before* this edit commits
+      // (see onDown's textEdit-commit guard below for the other half of this).
+      this.selectedId = null;
+      this.move = null;
+      this.resize = null;
+    }
 
     this.positionTextEditor();
     input.style.color = color;
+    if (opts) input.value = opts.value;
     this.canvas.parentElement!.appendChild(input);
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -724,6 +897,12 @@ export class Editor {
     input.addEventListener("blur", () => this.commitTextEditor());
     window.addEventListener("resize", reposition);
     input.focus();
+    // Repaint now: without this, the pre-edit annotation (or, for a brand-new
+    // text, nothing) stays whatever render() last drew, and in edit mode that
+    // pre-edit text would still be painted as an offset ghost underneath the
+    // now-transparent live position (render() skips `editId` while textEdit
+    // is set — see render()'s doc comment).
+    this.render();
   }
 
   /** Recompute the input's CSS-px position/font from the stored bitmap-px `at`. */
@@ -739,13 +918,47 @@ export class Editor {
     input.style.font = fontString(fontSize * scale);
   }
 
+  /**
+   * Commit the open editor's value. Two modes, keyed by `textEdit.editId`:
+   *
+   * - New text (`editId === null`, TASK-7): a non-blank value creates a new
+   *   `TextAnnotation` via the normal `commit()` (push + append); a blank
+   *   value is silently discarded (no history push).
+   * - Edit mode (`editId` set, TASK-23): a blank value **deletes** the
+   *   existing annotation (push + filter, mirroring `deleteSelected()`); an
+   *   unchanged value is a no-op (no history push, just re-render to
+   *   un-hide it); a changed value pushes once and replaces the annotation
+   *   in place — `{ ...existing, text }` keeps id/color/fontSize/at (and
+   *   strokeWidth) exactly as they were, so this is a single undo step that
+   *   only ever touches `text`.
+   */
   private commitTextEditor(): void {
     if (!this.textEdit) return;
-    const { input, at, color, fontSize, reposition } = this.textEdit;
+    const { input, at, color, fontSize, editId, reposition } = this.textEdit;
     const text = input.value;
     this.textEdit = null;
     input.remove();
     window.removeEventListener("resize", reposition);
+
+    if (editId) {
+      const existing = this.doc.annotations.find((a) => a.id === editId);
+      if (existing && existing.kind === "text") {
+        if (text.trim() === "") {
+          this.history.push(this.snapshot());
+          this.doc.annotations = this.doc.annotations.filter((a) => a.id !== editId);
+          this.doc.annotations = renumberBadges(this.doc.annotations);
+          if (this.selectedId === editId) this.selectedId = null;
+        } else if (text !== existing.text) {
+          this.history.push(this.snapshot());
+          this.doc.annotations = this.doc.annotations.map((a) => (a.id === editId ? { ...existing, text } : a));
+        }
+        // else: unchanged — no history push, just fall through to re-render
+        // (which un-hides the annotation now that textEdit is cleared).
+      }
+      this.render();
+      return;
+    }
+
     if (text.trim() !== "") {
       this.commit({ id: nextId(), color, strokeWidth: this.strokeWidth, kind: "text", at, text, fontSize });
     }
