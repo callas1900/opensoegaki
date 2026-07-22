@@ -95,6 +95,29 @@ export const FONT_PRESETS: Record<SizeName, number> = { S: 18, M: 28, L: 44 };
 export const HIGHLIGHTER_WIDTH_SCALE = 3;
 export const BADGE_RADIUS_PRESETS: Record<SizeName, number> = { S: 14, M: 20, L: 28 };
 
+// Adaptive annotation sizing (TASK-35.16, web-only): stroke/radius/font
+// presets were tuned for a typical desktop capture's long side; on an
+// imported photo many times larger (an iPhone's own 12 MP library shot),
+// the same fixed pixel sizes read as hairline-thin. `computeAnnotationScale`
+// mirrors the `maxImportDimension`/`decodeClampedBitmap` pattern exactly:
+// `baseline: null` (desktop) is the identity no-op, a number (web) scales
+// creation-time sizes up to keep roughly the same visual fraction of the
+// image, capped so an extreme photo doesn't produce absurdly thick strokes.
+// Round 8 tuning (real-iPhone feedback: web annotations still read too
+// small — "current L should be about the new M"): baseline lowered from
+// 1400 to 900 so a ~4000px iPhone photo scales by ~4.5x instead of ~2.9x,
+// making the new M render like the old L. Cap raised from 4 to 6 as
+// headroom that a `maxImportDimension`-clamped (4096px) import never
+// actually reaches: 4096 / 900 ≈ 4.55.
+export const ANNOTATION_SCALE_BASELINE = 900;
+export const ANNOTATION_SCALE_MAX = 6;
+
+/** Factor to multiply creation-time sizes by. `baseline === null` => 1 (desktop, unchanged). */
+export function computeAnnotationScale(longestSide: number, baseline: number | null): number {
+  if (baseline === null) return 1;
+  return Math.min(ANNOTATION_SCALE_MAX, Math.max(1, longestSide / baseline));
+}
+
 let counter = 0;
 export function nextId(): string {
   return `a${Date.now().toString(36)}${(counter++).toString(36)}`;

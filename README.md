@@ -48,6 +48,31 @@ Bundles are currently **unsigned**:
 
   Note: the macOS build currently targets Apple Silicon (aarch64) only.
 
+## Web version (iPhone)
+
+An installable, iPhone-focused web build is available at
+[https://callas1900.github.io/opensoegaki/](https://callas1900.github.io/opensoegaki/) —
+no App Store, no install required, though it can be added to your Home Screen
+(Share → Add to Home Screen) for a full-screen, offline-capable experience.
+
+**Works on iPhone:** choosing a photo from your library, every annotation tool
+(arrow, rectangle, text, highlighter, step badges, insert-image), crop,
+undo/redo, pasting an image, Save via the Share sheet, best-effort Copy,
+installing to the Home Screen, and offline use once installed.
+
+**Doesn't work on iPhone:** full-screen OS capture (Safari has no API for it)
+and native drag-out — both stay desktop-only; pasting a screenshot still
+works the same way.
+
+**Privacy:** the web build runs entirely on your device — images are never
+uploaded anywhere. There is no server component, on the web or otherwise.
+
+**Requirements:** iOS 16.4+ (for reliable canvas export and clipboard support
+in Safari).
+
+See [docs/WEB.md](docs/WEB.md) for the full design and an iOS manual
+smoke-test checklist.
+
 ## Hotkeys
 
 OpenSoegaki registers no global (system-wide) hotkeys; all shortcuts below are
@@ -100,8 +125,9 @@ pnpm tauri build
 ## Project layout
 
 ```
-src/           TypeScript frontend — editor/ (annotation object model, canvas, rendering), ui/ (toolbar popovers)
+src/           TypeScript frontend — editor/ (annotation object model, canvas, rendering), ui/ (toolbar popovers), platform/ (desktop/web IO seam)
 src-tauri/     Rust core (tray, screen capture, clipboard, drag-out)
+pwa/           Web (iPhone PWA) shell — index.html, manifest, service worker, icons
 docs/          Architecture and design documents
 .claude/       AI-assisted development configuration (Claude Code agents)
 ```

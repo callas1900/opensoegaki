@@ -417,6 +417,32 @@ bundle version is single-sourced to `src-tauri/Cargo.toml`
 (see the README's Download & install section for the SmartScreen/Gatekeeper
 workarounds this implies).
 
+## Web target (iPhone PWA)
+
+A second, web-only build ships from this same repository, reusing `src/editor/`
+entirely unchanged. All platform coupling is inverted behind one seam,
+`PlatformIO` (`src/platform/io.ts`): `src/platform/tauri.ts` implements it for
+desktop (every `@tauri-apps/*`/`@crabnebula/*` call, moved out of `main.ts`
+behavior-identical), `src/platform/web.ts` implements it for the browser
+(file-input picker, Web Share/download, best-effort clipboard write, all
+gated by feature-detected `Capabilities`). `src/app.ts`'s
+`bootstrapEditor(io: PlatformIO)` is the single shared wiring path both
+`src/main.ts` (desktop) and `src/main-web.ts` (web) call into — there is no
+duplicate toolbar-wiring code between the two entries; capability-specific
+controls carry `data-cap="<name>"` in the shared HTML and are hidden by
+`bootstrapEditor` when the active platform's capability is false.
+
+The web shell lives in `pwa/` (its own `index.html`, hand-rolled
+`manifest.webmanifest` + service worker, icons under `pwa/public/`) and
+builds via a separate `vite.config.web.ts` to `dist-web/` — `vite.config.ts`
+and the Tauri build are untouched. `.github/workflows/pages.yml` deploys
+`dist-web` to GitHub Pages on pushes to web-relevant paths.
+
+Full design rationale, the `PlatformIO` contract (including the `copyPng`
+lazy-producer requirement for Safari's clipboard user-gesture window), the
+risk register, and an iOS manual smoke-test checklist all live in
+[docs/WEB.md](WEB.md).
+
 ## Platform roadmap
 
 1. **Windows 11** (current) — NSIS/MSI bundles.

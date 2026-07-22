@@ -2,9 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; manifest-src 'self'; base-uri 'self'"
+    />
     <title>OpenSoegaki</title>
-    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon.png" />
+    <meta name="theme-color" content="#1e1f22" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   </head>
   <body>
     <div id="app">
@@ -91,34 +103,33 @@
             <svg viewBox="0 0 24 24" width="88" height="88" fill="none" stroke="#4d5055" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" />
             </svg>
-            <img src="/src-tauri/icons/icon.svg" width="52" height="52" alt="" />
+            <img src="/icon.svg" width="52" height="52" alt="" />
           </div>
           <p class="welcome-name">OpenSoegaki</p>
-          <p class="welcome-hint">Press <kbd>Ctrl+V</kbd> to paste a screenshot,<br />or click <strong>Capture</strong> for the full screen.</p>
+          <p class="welcome-hint">Paste a screenshot, or choose a photo to get started.</p>
+          <button id="welcome-pick" data-cap="pickImage">Choose Photo</button>
+          <p class="welcome-privacy">Runs entirely on your device — images are never uploaded.</p>
+          <p class="welcome-version">OpenSoegaki <span id="app-version"></span></p>
         </div>
       </main>
       <footer id="share-bar">
         <div id="drag-tab" data-cap="dragOut" title="Drag me into another app to share as PNG">⇱ drag to share</div>
         <div id="share-actions">
           <button id="copy" data-cap="copyPng" title="Copy PNG to clipboard (Ctrl+C)">Copy</button>
-          <button id="save" title="Save PNG (Ctrl+S)">Save</button>
+          <button id="save" title="Share image" aria-label="Share image">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+          </button>
         </div>
       </footer>
     </div>
-    <div id="permission-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="permission-modal-title">
-        <h2 id="permission-modal-title">Screen Recording permission required</h2>
-        <p>
-          OpenSoegaki needs the macOS Screen Recording permission to capture the screen.
-          Grant it in <strong>System Settings → Privacy &amp; Security → Screen Recording</strong>,
-          then <strong>restart OpenSoegaki</strong> (macOS applies the permission only after a restart).
-        </p>
-        <div class="modal-actions">
-          <button id="permission-open-settings">Open Settings</button>
-          <button id="permission-dismiss">Dismiss</button>
-        </div>
-      </div>
+    <div id="install-hint" hidden>
+      <span>Install: tap <strong>Share</strong> → <strong>Add to Home Screen</strong></span>
+      <button id="install-hint-dismiss" aria-label="Dismiss">×</button>
     </div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="../src/main-web.ts"></script>
   </body>
 </html>

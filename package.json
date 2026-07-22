@@ -9,8 +9,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:web": "tsc --noEmit && vite build --config vite.config.web.ts",
     "check": "tsc --noEmit",
     "preview": "vite preview",
+    "preview:web": "vite preview --config vite.config.web.ts",
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",

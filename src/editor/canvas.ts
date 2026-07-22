@@ -13,6 +13,7 @@ import {
   FONT_PRESETS,
   PALETTE,
   STROKE_PRESETS,
+  computeAnnotationScale,
   nextBadgeNumber,
   nextId,
   renumberBadges,
@@ -21,6 +22,7 @@ import {
 import { fontString, renderAnnotations } from "./render";
 import { History, type DocSnapshot } from "./history";
 import { boundsOf, hitTest, type Bounds } from "./hittest";
+import { decodeClampedBitmap } from "./downscale";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
 import {
   resizeHandlesFor,
@@ -31,6 +33,12 @@ import {
 
 /** Selection hit-test tolerance in CSS px; scale-compensated to bitmap px at the call site. */
 const BASE_TOL_PX = 6;
+/** Touch double-tap re-edit window (TASK-35.10), mirroring desktop dblclick (TASK-23). */
+const DOUBLE_TAP_MS = 300;
+/** Touch double-tap position tolerance in CSS px; scale-compensated to bitmap px at the call site, same pattern as BASE_TOL_PX. */
+const DOUBLE_TAP_SLOP_PX = 24;
+/** Gap kept between the selection's marquee and the floating delete control, in CSS px (TASK-35.11). */
+const SELECTION_CONTROLS_MARGIN_PX = 8;
 /** Crop corner handle draw size and grab radius, in CSS px; scale-compensated at the call site. */
 const HANDLE_DRAW_PX = 10;
 const HANDLE_HIT_PX = 12;
@@ -44,6 +52,19 @@ export class Editor {
   // comment); it is never cleared by setBackground/restore, only appended to
   // by insertImage.
   readonly doc: Doc = { imageBitmap: null, annotations: [], images: new Map() };
+  // Set by bootstrapEditor from the active PlatformIO's maxImportDimension
+  // (TASK-35.14, made web-only in round 6): null means unlimited (desktop);
+  // a number clamps loadImage/loadImageBlob's decode to that longest side.
+  maxImportDimension: number | null = null;
+  // Set by bootstrapEditor from the active PlatformIO's annotationScaleBaseline
+  // (TASK-35.16, web-only): null means desktop's fixed sizes (docScale stays 1).
+  annotationScaleBaseline: number | null = null;
+  // Recomputed only by loadImage/loadImageBlob, right after the new
+  // background bitmap is assigned (crop deliberately does not recompute —
+  // a crop only trims the already-loaded image, it doesn't change what
+  // "large" means). Multiplies stroke/radius/font at the three annotation
+  // creation sites below; always 1 when annotationScaleBaseline is null.
+  private docScale = 1;
   tool: Tool = "arrow";
   color: string = DEFAULTS.color;
   strokeWidth: number = DEFAULTS.strokeWidth;
@@ -85,7 +106,19 @@ export class Editor {
     fontSize: number;
     editId: string | null;
     reposition: () => void;
+    /** Removes the visualViewport listeners set up for this edit session, if any (TASK-35.10); safe to call unconditionally. */
+    clearViewportGuard: () => void;
   } | null = null;
+  // Last pointerup's time+position for a select-tool "stationary tap on a
+  // text annotation" (TASK-35.10 touch double-tap detector); unrelated to
+  // `move`/`resize` drag state. Never part of doc/history.
+  private lastTapUp: { time: number; p: Point } | null = null;
+  // Floating delete-button overlay shown only while an annotation is
+  // selected (TASK-35.11), mirroring the crop tool's `controls` overlay
+  // above. Owned entirely here: created/positioned in drawSelectionOverlay,
+  // torn down in render() once nothing is selected. Never part of doc,
+  // history, or renderAnnotations.
+  private selectionControls: HTMLButtonElement | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -97,12 +130,16 @@ export class Editor {
   /** Load a captured PNG (raw bytes) as the new background. */
   async loadImage(png: Uint8Array): Promise<void> {
     const blob = new Blob([png as BlobPart], { type: "image/png" });
-    this.setBackground(await createImageBitmap(blob));
+    const bmp = await decodeClampedBitmap(blob, this.maxImportDimension);
+    this.setBackground(bmp);
+    this.docScale = computeAnnotationScale(Math.max(bmp.width, bmp.height), this.annotationScaleBaseline);
   }
 
   /** Load an arbitrary image blob (e.g. from a clipboard paste) as the new background. */
   async loadImageBlob(blob: Blob): Promise<void> {
-    this.setBackground(await createImageBitmap(blob));
+    const bmp = await decodeClampedBitmap(blob, this.maxImportDimension);
+    this.setBackground(bmp);
+    this.docScale = computeAnnotationScale(Math.max(bmp.width, bmp.height), this.annotationScaleBaseline);
   }
 
   /**
@@ -228,6 +265,7 @@ export class Editor {
     // never through renderAnnotations, so it can never reach exportPng().
     const selected = this.selectedAnnotation();
     if (selected) this.drawSelectionOverlay(selected);
+    else this.teardownSelectionControls();
     this.drawCropOverlay();
   }
 
@@ -433,6 +471,78 @@ export class Editor {
       ctx.strokeStyle = PALETTE[0];
       ctx.strokeRect(handle.pos.x - half, handle.pos.y - half, side, side);
     }
+
+    this.positionSelectionControls({ x, y, w, h });
+  }
+
+  /**
+   * Lazily create the floating delete-button overlay (TASK-35.11): a touch
+   * affordance for the keyboard-only Delete/Backspace shortcut, mirroring
+   * the crop tool's own floating ✓/✗ overlay. Deletes through the exact same
+   * `deleteSelected()` path as the keyboard shortcut — no separate logic.
+   */
+  private ensureSelectionControls(): HTMLButtonElement {
+    if (this.selectionControls) return this.selectionControls;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "selection-delete";
+    btn.title = "Delete (Delete/Backspace)";
+    btn.textContent = "🗑";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.deleteSelected();
+    });
+    this.canvas.parentElement!.appendChild(btn);
+    this.selectionControls = btn;
+    return btn;
+  }
+
+  /** Tear down the floating delete-button overlay, if present. */
+  private teardownSelectionControls(): void {
+    if (!this.selectionControls) return;
+    this.selectionControls.remove();
+    this.selectionControls = null;
+  }
+
+  /**
+   * Position the floating delete button just outside the selection
+   * marquee's NE corner, using the same bitmap-px -> CSS-px mapping as
+   * `positionCropControls`/`positionTextEditor`, clamped to stay fully
+   * inside the stage viewport.
+   */
+  private positionSelectionControls(paddedBounds: { x: number; y: number; w: number; h: number }): void {
+    const btn = this.ensureSelectionControls();
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const stageRect = this.canvas.parentElement!.getBoundingClientRect();
+    const scale = canvasRect.width / this.canvas.width;
+    const originX = canvasRect.left - stageRect.left;
+    const originY = canvasRect.top - stageRect.top;
+
+    const neX = originX + (paddedBounds.x + paddedBounds.w) * scale;
+    const neY = originY + paddedBounds.y * scale;
+
+    const bw = btn.offsetWidth || 30;
+    const bh = btn.offsetHeight || 30;
+
+    const idealLeft = neX + SELECTION_CONTROLS_MARGIN_PX;
+    const idealTop = neY - SELECTION_CONTROLS_MARGIN_PX - bh;
+    let left = Math.min(Math.max(idealLeft, 0), stageRect.width - bw);
+    let top = Math.min(Math.max(idealTop, 0), stageRect.height - bh);
+
+    if (top !== idealTop) {
+      // The default above-the-corner placement got pulled down by the
+      // viewport clamp (selection near the top stage edge, where there's
+      // no room above the corner): that clamped spot can land on top of the
+      // NE resize handle (TASK-29) and steal its pointer events. Drop the
+      // button below the NE corner instead, clear of the handle's CSS-px
+      // hit radius plus the usual margin — `left` is unaffected since a
+      // purely horizontal clamp never brings the button into the handle's
+      // row (the unclamped placement always sits entirely above it).
+      top = Math.min(Math.max(neY + HANDLE_HIT_PX + SELECTION_CONTROLS_MARGIN_PX, 0), stageRect.height - bh);
+    }
+
+    btn.style.left = `${left}px`;
+    btn.style.top = `${top}px`;
   }
 
   /**
@@ -533,7 +643,7 @@ export class Editor {
   private bindPointerEvents(): void {
     this.canvas.addEventListener("pointerdown", (e) => this.onDown(this.toCanvas(e), e));
     this.canvas.addEventListener("pointermove", (e) => this.onMove(this.toCanvas(e), e.shiftKey));
-    this.canvas.addEventListener("pointerup", () => this.onUp());
+    this.canvas.addEventListener("pointerup", (e) => this.onUp(this.toCanvas(e)));
   }
 
   /** Map client coords to canvas bitmap coords (canvas may be CSS-scaled). */
@@ -686,7 +796,12 @@ export class Editor {
       return;
     }
 
-    const base = { id: nextId(), color: this.color, strokeWidth: this.strokeWidth };
+    // docScale (TASK-35.16, web-only, always 1 on desktop) scales
+    // creation-time stroke/radius/font so annotations keep roughly the same
+    // visual fraction of a large imported photo; covers arrow/rect/highlight
+    // via `base.strokeWidth` here (highlight already multiplies again at
+    // render, unaffected by this) and badge's radius just below.
+    const base = { id: nextId(), color: this.color, strokeWidth: this.strokeWidth * this.docScale };
 
     if (tool === "badge") {
       this.commit({
@@ -694,7 +809,7 @@ export class Editor {
         kind: "badge",
         at: p,
         number: nextBadgeNumber(this.doc.annotations),
-        radius: BADGE_RADIUS_PRESETS[this.size],
+        radius: BADGE_RADIUS_PRESETS[this.size] * this.docScale,
       });
       this.render();
       return;
@@ -801,7 +916,35 @@ export class Editor {
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
-  private onUp(): void {
+  private onUp(p: Point): void {
+    // Touch double-tap re-edit (TASK-35.10): touch pointer events don't carry
+    // a native double-click `detail` counter the way mouse events do (see
+    // onDown's `e.detail >= 2` branch, TASK-23), so a second stationary
+    // release on the same text annotation within DOUBLE_TAP_MS/-SLOP is
+    // treated the same way, reusing the exact same re-edit call. Only a
+    // "moved" false select-tool release on a text hit is a candidate; any
+    // other release (drag, non-text hit, other tool) resets the sequence.
+    // Falls through unchanged to the existing branch dispatch below either
+    // way, so a non-double-tap release still gets its normal cleanup.
+    if (this.tool === "select" && this.move && !this.move.moved && this.move.original.kind === "text") {
+      const hit = this.move.original;
+      const prevTap = this.lastTapUp;
+      const isDoubleTap =
+        !!prevTap &&
+        performance.now() - prevTap.time <= DOUBLE_TAP_MS &&
+        Math.hypot(p.x - prevTap.p.x, p.y - prevTap.p.y) <= DOUBLE_TAP_SLOP_PX * this.cropScale();
+      if (isDoubleTap) {
+        this.lastTapUp = null;
+        this.move = null;
+        this.canvas.style.cursor = "default";
+        this.openTextEditor(hit.at, { editId: hit.id, value: hit.text, color: hit.color, fontSize: hit.fontSize });
+        return;
+      }
+      this.lastTapUp = { time: performance.now(), p };
+    } else {
+      this.lastTapUp = null;
+    }
+
     if (this.resize) {
       this.resize = null;
       this.canvas.style.cursor = this.tool === "select" ? "default" : "crosshair";
@@ -860,10 +1003,17 @@ export class Editor {
     const input = document.createElement("input");
     input.className = "text-editor";
     const color = opts?.color ?? this.color;
-    const fontSize = opts?.fontSize ?? this.fontSize;
+    // opts.fontSize (TASK-23 re-edit path) is already-baked from the
+    // existing annotation and must stay untouched; only the brand-new-text
+    // path applies docScale (TASK-35.16, web-only, always 1 on desktop).
+    const fontSize = opts?.fontSize ?? this.fontSize * this.docScale;
     const editId = opts?.editId ?? null;
     const reposition = () => this.positionTextEditor();
-    this.textEdit = { input, at, color, fontSize, editId, reposition };
+    // Reassigned below, once the visualViewport listeners (if any) actually
+    // exist; the object stored on `this.textEdit` shares this same closure
+    // variable, so the later reassignment is visible through it too.
+    let clearViewportGuard = () => {};
+    this.textEdit = { input, at, color, fontSize, editId, reposition, clearViewportGuard: () => clearViewportGuard() };
 
     if (opts) {
       // Edit mode (TASK-23): drop the selection/resize/move gesture state so
@@ -897,6 +1047,23 @@ export class Editor {
     input.addEventListener("blur", () => this.commitTextEditor());
     window.addEventListener("resize", reposition);
     input.focus();
+    // Keep the input visible above the iOS soft keyboard (TASK-35.10): an
+    // initial scroll-into-view, then re-applied on every visualViewport
+    // resize/scroll (keyboard opening/closing, or the page nudging to keep
+    // the focused field on-screen). Feature-detected and removed on
+    // commit/cancel below; a soft keyboard never triggers these events on
+    // desktop, so this is a no-op there in practice.
+    input.scrollIntoView({ block: "center" });
+    const vv = window.visualViewport;
+    if (vv) {
+      const onViewportChange = () => input.scrollIntoView({ block: "center" });
+      vv.addEventListener("resize", onViewportChange);
+      vv.addEventListener("scroll", onViewportChange);
+      clearViewportGuard = () => {
+        vv.removeEventListener("resize", onViewportChange);
+        vv.removeEventListener("scroll", onViewportChange);
+      };
+    }
     // Repaint now: without this, the pre-edit annotation (or, for a brand-new
     // text, nothing) stays whatever render() last drew, and in edit mode that
     // pre-edit text would still be painted as an offset ghost underneath the
@@ -934,11 +1101,12 @@ export class Editor {
    */
   private commitTextEditor(): void {
     if (!this.textEdit) return;
-    const { input, at, color, fontSize, editId, reposition } = this.textEdit;
+    const { input, at, color, fontSize, editId, reposition, clearViewportGuard } = this.textEdit;
     const text = input.value;
     this.textEdit = null;
     input.remove();
     window.removeEventListener("resize", reposition);
+    clearViewportGuard();
 
     if (editId) {
       const existing = this.doc.annotations.find((a) => a.id === editId);
@@ -967,10 +1135,11 @@ export class Editor {
 
   private cancelTextEditor(): void {
     if (!this.textEdit) return;
-    const { input, reposition } = this.textEdit;
+    const { input, reposition, clearViewportGuard } = this.textEdit;
     this.textEdit = null;
     input.remove();
     window.removeEventListener("resize", reposition);
+    clearViewportGuard();
     this.render();
   }
 }

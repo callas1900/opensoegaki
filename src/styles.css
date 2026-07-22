@@ -7,11 +7,19 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
-#app { display: flex; flex-direction: column; height: 100vh; }
+#app {
+  display: flex; flex-direction: column;
+  height: 100vh; /* fallback for browsers without dvh support */
+  height: 100dvh;
+}
 
 #toolbar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 8px 12px; background: var(--panel);
+  padding: 8px 12px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  background: var(--panel);
 }
 #toolbar button {
   min-width: 34px; height: 34px; border: none; border-radius: 6px;
@@ -19,6 +27,10 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
   display: inline-flex; align-items: center; justify-content: center;
 }
 #toolbar button:hover { background: #3a3d42; }
+/* #toolbar button's own `display: inline-flex` above outranks the UA
+   [hidden] rule by specificity, so a capability-gated toolbar button (see
+   bootstrapEditor's [data-cap] hiding) needs an explicit override here. */
+#toolbar button[hidden] { display: none; }
 #toolbar button.active { background: var(--accent); }
 #toolbar button svg { display: block; }
 .sep { width: 1px; height: 22px; background: #45484e; margin: 0 4px; }
@@ -35,8 +47,21 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #sizes button:hover { background: #3a3d42; }
 #sizes button.active { background: var(--accent); }
 
-#stage { flex: 1; overflow: auto; display: grid; place-items: center; position: relative; }
-#canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
+#stage {
+  flex: 1; overflow: auto; display: grid; place-items: center; position: relative;
+  /* iPhone (TASK-35.10): no pinch/pan gestures or pull-to-refresh while
+     drawing, and no accidental text-selection long-press on the stage
+     itself (the inline text editor overrides this back on below). */
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#canvas {
+  max-width: 100%; max-height: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  touch-action: none;
+  -webkit-touch-callout: none; /* no iOS press-and-hold callout/menu on the canvas */
+}
 #stage.empty #canvas { display: none; }
 
 /* Welcome empty state, shown until an image is loaded */
@@ -45,6 +70,37 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 .welcome-mark > * { grid-area: 1 / 1; }
 .welcome-name { font-size: 15px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #c9cdd2; margin: 0 0 18px; }
 .welcome-hint { margin: 0; font-size: 14px; line-height: 2.1; }
+/* Web-only welcome affordance (absent from the desktop shell's markup);
+   [data-cap] hiding still applies if pickImage were ever unavailable. */
+#welcome-pick {
+  margin-top: 16px; border: none; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 14px; font-weight: 600;
+  padding: 10px 22px; cursor: pointer;
+}
+#welcome-pick:hover { opacity: 0.9; }
+
+/* Web-only version/privacy footer (TASK-35.13, absent from the desktop
+   shell's markup) — small and unobtrusive, under the welcome hint/button. */
+.welcome-privacy { margin: 18px 0 2px; font-size: 12px; color: #7d828a; }
+.welcome-version { margin: 0; font-size: 11px; color: #5c6066; }
+
+/* Web-only one-time iOS "Add to Home Screen" hint (absent from the desktop
+   shell's markup). Bottom-anchored so it clears the toolbar and the soft
+   keyboard's usual resting position. */
+#install-hint {
+  position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-radius: 8px;
+  background: var(--panel); color: var(--fg); border: 1px solid #45484e;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  font-size: 14px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+#install-hint[hidden] { display: none; }
+#install-hint-dismiss {
+  border: none; background: transparent; color: var(--fg); font-size: 18px;
+  line-height: 1; cursor: pointer; padding: 2px 6px; flex-shrink: 0;
+}
 .welcome-hint strong { color: #c9cdd2; }
 #stage:not(.empty) #welcome { display: none; }
 
@@ -59,17 +115,37 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 .crop-controls .crop-apply { color: #4caf50; }
 .crop-controls .crop-cancel { color: var(--fg); }
 
+/* Floating delete-button overlay (TASK-35.11), shown only while an
+   annotation is selected — same positioning idiom as .crop-controls above. */
+.selection-delete {
+  position: absolute; z-index: 6;
+  min-width: 30px; height: 30px; border: 1px solid #45484e; border-radius: 6px;
+  background: var(--panel); color: var(--fg); font-size: 15px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.selection-delete:hover { background: #3a3d42; }
+
 .text-editor {
   position: absolute; margin: 0; padding: 0; border: 0; outline: none;
   background: transparent; line-height: 1.2; white-space: pre;
   min-width: 1em;
   text-shadow: 0 0 3px rgba(255,255,255,0.9), 0 0 3px rgba(255,255,255,0.9);
+  /* #stage above disables selection/touch-callout for the canvas itself;
+     the inline text editor is a real input and must keep normal text
+     selection and caret/callout behavior. */
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 kbd { background: var(--panel); border: 1px solid #45484e; border-bottom-width: 2px; border-radius: 5px; padding: 2px 7px; font-family: inherit; }
 
 #share-bar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; background: var(--panel);
+  padding: 8px 12px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  background: var(--panel);
 }
 #drag-tab {
   padding: 6px 16px; border-radius: 8px 8px 0 0; background: var(--accent);
@@ -82,6 +158,9 @@ kbd { background: var(--panel); border: 1px solid #45484e; border-bottom-width: 
   border-radius: 6px; padding: 6px 14px; cursor: pointer;
 }
 #copy:hover, #save:hover { background: #3a3d42; }
+/* Icon-only share-bar buttons (web shell): kill the inline-SVG baseline gap.
+   Desktop buttons contain only text, so this rule is a no-op there. */
+#copy svg, #save svg { display: block; }
 
 .modal-overlay {
   position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;

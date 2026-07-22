@@ -5,6 +5,9 @@ import {
   nextBadgeNumber,
   renumberBadges,
   contrastText,
+  computeAnnotationScale,
+  ANNOTATION_SCALE_BASELINE,
+  ANNOTATION_SCALE_MAX,
   STROKE_PRESETS,
   FONT_PRESETS,
   DEFAULTS,
@@ -210,5 +213,32 @@ describe("presets and defaults", () => {
 
   it("DEFAULTS.color is in PALETTE", () => {
     expect(PALETTE).toContain(DEFAULTS.color);
+  });
+});
+
+describe("computeAnnotationScale", () => {
+  it("baseline null (desktop) is the identity, at any size", () => {
+    expect(computeAnnotationScale(1400, null)).toBe(1);
+    expect(computeAnnotationScale(100, null)).toBe(1);
+    expect(computeAnnotationScale(20000, null)).toBe(1);
+  });
+
+  it("stays 1 below the baseline (never shrinks below desktop sizes)", () => {
+    expect(computeAnnotationScale(800, ANNOTATION_SCALE_BASELINE)).toBe(1);
+  });
+
+  it("is 1 exactly at the baseline", () => {
+    expect(computeAnnotationScale(ANNOTATION_SCALE_BASELINE, ANNOTATION_SCALE_BASELINE)).toBe(1);
+  });
+
+  it("scales proportionally above the baseline", () => {
+    expect(computeAnnotationScale(4032, ANNOTATION_SCALE_BASELINE)).toBeCloseTo(4032 / 900, 5); // ≈ 4.48
+  });
+
+  it("caps at ANNOTATION_SCALE_MAX for images beyond the cap threshold", () => {
+    // Cap kicks in above longestSide = baseline * ANNOTATION_SCALE_MAX (5400); this
+    // is unreachable via the app's own web flow (maxImportDimension already
+    // clamps imports to 4096px), but the pure function's own cap is still tested here.
+    expect(computeAnnotationScale(6000, ANNOTATION_SCALE_BASELINE)).toBe(ANNOTATION_SCALE_MAX);
   });
 });
