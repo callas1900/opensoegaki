@@ -236,9 +236,15 @@ No new Tauri commands; the desktop IPC surface is unchanged.
 
 ### Deploy — `.github/workflows/pages.yml`
 
-Push to `main` filtered to web paths + `workflow_dispatch` → pnpm frozen install →
-`build:web` → `actions/upload-pages-artifact` (`dist-web`) → `actions/deploy-pages`.
-Existing `ci.yml` untouched.
+Release tag push (`v*`, the same trigger as `release.yml`) + `workflow_dispatch` →
+pnpm frozen install → `build:web` → `actions/upload-pages-artifact` (`dist-web`) →
+`actions/deploy-pages`. Existing `ci.yml` untouched.
+
+Tying Pages to releases (user decision, 2026-07-22) means every deploy carries a
+bumped `package.json` version — the same value that keys the service worker's
+`soegaki-v<version>` cache, so each deploy reliably invalidates the previous
+offline shell. The desktop app and the web app therefore always release together
+from one tag.
 
 ### Versioning
 

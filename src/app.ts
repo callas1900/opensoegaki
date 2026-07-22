@@ -86,8 +86,38 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
     });
   }
 
-  document.querySelector("#undo")!.addEventListener("click", () => editor.undo());
-  document.querySelector("#redo")!.addEventListener("click", () => editor.redo());
+  const newBtn = document.querySelector<HTMLButtonElement>("#new-doc")!;
+
+  /**
+   * Sync the stage's empty/loaded visual state and the New button's enabled
+   * state to whether the editor currently has a background image (TASK-36).
+   * Called after every state change that can add or remove one: load,
+   * undo/redo, and clearDocument.
+   */
+  function syncEmptyState(): void {
+    const loaded = editor.hasImage();
+    stage.classList.toggle("empty", !loaded);
+    newBtn.disabled = !loaded;
+  }
+
+  /** editor.undo()/redo() don't know about the toolbar; these wrappers keep New's enabled state and the empty/loaded stage class in sync afterward. */
+  function doUndo(): void {
+    editor.undo();
+    syncEmptyState();
+  }
+  function doRedo(): void {
+    editor.redo();
+    syncEmptyState();
+  }
+
+  document.querySelector("#undo")!.addEventListener("click", () => doUndo());
+  document.querySelector("#redo")!.addEventListener("click", () => doRedo());
+  // hasImage() guard lives in clearDocument() itself; Ctrl+N and this click
+  // are both no-ops while the editor is already empty.
+  newBtn.addEventListener("click", () => {
+    editor.clearDocument();
+    syncEmptyState();
+  });
 
   // ---- keyboard --------------------------------------------------------------
 
@@ -128,7 +158,15 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
       void pasteImageAsAnnotation();
     } else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      e.shiftKey ? editor.redo() : editor.undo();
+      e.shiftKey ? doRedo() : doUndo();
+    } else if (mod && e.key.toLowerCase() === "n") {
+      // Browsers may reserve Ctrl+N (new window) and swallow this before it
+      // ever reaches us — acceptable: the toolbar button is the primary
+      // affordance, and desktop Tauri (no browser chrome to intercept it)
+      // gets the shortcut for free regardless.
+      e.preventDefault();
+      editor.clearDocument();
+      syncEmptyState();
     } else if (mod && e.key.toLowerCase() === "c" && io.capabilities.copyPng) {
       e.preventDefault();
       void copyToClipboard();
@@ -151,9 +189,9 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
 
   // ---- input: paste and insert -------------------------------------------------
 
-  /** Reveal the canvas and hide the welcome empty state once the editor has a background image. */
+  /** Reveal the canvas and hide the welcome empty state once the editor has a background image; also enables New (TASK-36). */
   function showLoadedState(): void {
-    stage.classList.remove("empty");
+    syncEmptyState();
   }
 
   // Paste is the primary capture path: the user shoots with the OS tool

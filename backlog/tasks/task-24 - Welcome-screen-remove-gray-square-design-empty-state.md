@@ -4,7 +4,7 @@ title: 'Welcome screen: remove gray square, design empty state'
 status: Done
 assignee: []
 created_date: '2026-07-17 01:48'
-updated_date: '2026-07-19 16:17'
+updated_date: '2026-07-22 17:13'
 labels: []
 dependencies: []
 priority: medium
@@ -24,3 +24,9 @@ On first launch (no image yet) a gray rectangle shows in the center of the stage
 - [ ] #3 After capturing or pasting an image, the welcome content is fully hidden and the editor looks unchanged from today
 - [ ] #4 Returning to an empty state is not required (app currently never clears the image)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-36 (2026-07-22, user-requested) adds an intentional way back to the empty/welcome state: New button / Ctrl+N clears the document (undoable). AC4's parenthetical ('app currently never clears the image') is superseded by that user decision; the welcome layout itself is unchanged.
+<!-- SECTION:NOTES:END -->

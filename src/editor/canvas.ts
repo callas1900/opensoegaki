@@ -42,6 +42,14 @@ const SELECTION_CONTROLS_MARGIN_PX = 8;
 /** Crop corner handle draw size and grab radius, in CSS px; scale-compensated at the call site. */
 const HANDLE_DRAW_PX = 10;
 const HANDLE_HIT_PX = 12;
+/**
+ * Multiplier applied to handle grab radii for touch pointers only (round
+ * 10, real-iPhone feedback: crop/resize handles visible but hard to grab
+ * with a finger). HANDLE_HIT_PX is a mouse-precision default; Apple's HIG
+ * recommends ~44pt touch targets, well above that. Mouse/pen pointers are
+ * unaffected — this only ever multiplies when `pointerType === "touch"`.
+ */
+const TOUCH_HIT_MULTIPLIER = 2;
 /** Gap kept between the crop corner handle and the floating ✓/✗ controls, in CSS px. */
 const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
 /** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
@@ -132,14 +140,12 @@ export class Editor {
     const blob = new Blob([png as BlobPart], { type: "image/png" });
     const bmp = await decodeClampedBitmap(blob, this.maxImportDimension);
     this.setBackground(bmp);
-    this.docScale = computeAnnotationScale(Math.max(bmp.width, bmp.height), this.annotationScaleBaseline);
   }
 
   /** Load an arbitrary image blob (e.g. from a clipboard paste) as the new background. */
   async loadImageBlob(blob: Blob): Promise<void> {
     const bmp = await decodeClampedBitmap(blob, this.maxImportDimension);
     this.setBackground(bmp);
-    this.docScale = computeAnnotationScale(Math.max(bmp.width, bmp.height), this.annotationScaleBaseline);
   }
 
   /**
@@ -199,6 +205,7 @@ export class Editor {
     this.teardownCrop();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
+    this.recomputeDocScale();
     // If the crop tool is active (including when it was selected before any
     // image existed, leaving initCrop() a no-op at the time), the new image
     // now has a bitmap to crop: re-initialize a fresh full-image region
@@ -242,13 +249,34 @@ export class Editor {
       this.canvas.width = snapshot.imageBitmap.width;
       this.canvas.height = snapshot.imageBitmap.height;
     }
+    // TASK-36: recompute here too — undoing/redoing a background replacement
+    // previously left docScale stale on web (a pre-existing latent bug: the
+    // restored document's annotations are already-baked and unaffected, but
+    // any *new* annotation drawn afterward would have used the wrong scale).
+    this.recomputeDocScale();
     // Mirrors setBackground: if the crop tool is active, re-initialize a
     // fresh full-image region on the restored image instead of leaving a
-    // dead crop-tool state after undo/redo. initCrop() renders internally
-    // (and no-ops if the restored snapshot has no image, via hasImage()), so
-    // only one of these two paths renders.
-    if (this.tool === "crop") this.initCrop();
+    // dead crop-tool state after undo/redo. initCrop() renders internally,
+    // so only one of these two paths renders. The hasImage() guard keeps the
+    // null-bitmap case (redo of a clear) on the render() path — initCrop()
+    // would no-op without rendering, leaving stale canvas pixels.
+    if (this.tool === "crop" && this.hasImage()) this.initCrop();
     else this.render();
+  }
+
+  /**
+   * Recompute `docScale` from the current background (TASK-35.16's
+   * adaptive sizing). Single choke point called from every place the
+   * background can change: `setBackground` (new load), `restore`
+   * (undo/redo), and `clearDocument` (below). An absent bitmap (0) is
+   * treated as "below baseline" by `computeAnnotationScale`, i.e. `1`.
+   */
+  private recomputeDocScale(): void {
+    const bitmap = this.doc.imageBitmap;
+    this.docScale = computeAnnotationScale(
+      bitmap ? Math.max(bitmap.width, bitmap.height) : 0,
+      this.annotationScaleBaseline,
+    );
   }
 
   render(): void {
@@ -310,6 +338,27 @@ export class Editor {
     this.doc.annotations = this.doc.annotations.filter((a) => a.id !== this.selectedId);
     this.doc.annotations = renumberBadges(this.doc.annotations);
     this.selectedId = null;
+    this.render();
+  }
+
+  /**
+   * Discard the document back to the welcome/empty state (TASK-36).
+   * Undoable: the current doc is pushed to history first, so one undo
+   * restores it (until the next image load clears history — see
+   * `setBackground`).
+   */
+  clearDocument(): void {
+    if (!this.hasImage()) return;
+    this.history.push(this.snapshot()); // same push mechanism setBackground/TASK-19 uses
+    this.cancelTextEditor();
+    this.teardownCrop();
+    this.doc.imageBitmap = null;
+    this.doc.annotations = [];
+    this.selectedId = null;
+    this.move = null;
+    this.resize = null;
+    // history and doc.images deliberately preserved: the pushed snapshot references them.
+    this.recomputeDocScale();
     this.render();
   }
 
@@ -642,7 +691,7 @@ export class Editor {
 
   private bindPointerEvents(): void {
     this.canvas.addEventListener("pointerdown", (e) => this.onDown(this.toCanvas(e), e));
-    this.canvas.addEventListener("pointermove", (e) => this.onMove(this.toCanvas(e), e.shiftKey));
+    this.canvas.addEventListener("pointermove", (e) => this.onMove(this.toCanvas(e), e.shiftKey, e.pointerType));
     this.canvas.addEventListener("pointerup", (e) => this.onUp(this.toCanvas(e)));
   }
 
@@ -668,9 +717,16 @@ export class Editor {
     return this.canvas.width / rect.width;
   }
 
-  /** Crop corner handle grab radius in bitmap px, compensating for CSS scaling. */
-  private handleHitRadius(): number {
-    return HANDLE_HIT_PX * this.cropScale();
+  /**
+   * Crop/resize-handle grab radius in bitmap px, compensating for CSS
+   * scaling. `pointerType` is the triggering PointerEvent's own field
+   * (`"touch"`, `"mouse"`, `"pen"`, or `""` if unknown) — only `"touch"`
+   * enlarges the radius (TOUCH_HIT_MULTIPLIER); mouse/pen get exactly the
+   * pre-round-10 radius, unchanged.
+   */
+  private handleHitRadius(pointerType: string): number {
+    const touchMultiplier = pointerType === "touch" ? TOUCH_HIT_MULTIPLIER : 1;
+    return HANDLE_HIT_PX * touchMultiplier * this.cropScale();
   }
 
   /** Resize cursor for a given corner handle. */
@@ -730,7 +786,7 @@ export class Editor {
       // A press elsewhere in the region (or if crop state is somehow absent)
       // is inert — no capture, no draft.
       if (!this.crop) return;
-      const h = handleAt(p, this.crop.rect, this.handleHitRadius());
+      const h = handleAt(p, this.crop.rect, this.handleHitRadius(e.pointerType));
       if (h) {
         this.canvas.setPointerCapture(e.pointerId);
         this.crop.drag = h;
@@ -774,7 +830,7 @@ export class Editor {
       const selected = this.selectedAnnotation();
       if (selected) {
         const bounds = boundsOf(selected, this.ctx);
-        const h = resizeHandleAt(resizeHandlesFor(selected, bounds), p, this.handleHitRadius());
+        const h = resizeHandleAt(resizeHandlesFor(selected, bounds), p, this.handleHitRadius(e.pointerType));
         if (h) {
           this.resize = { handle: h, original: structuredClone(selected), bounds, changed: false };
           this.render();
@@ -825,7 +881,7 @@ export class Editor {
     this.render();
   }
 
-  private onMove(p: Point, shiftKey = false): void {
+  private onMove(p: Point, shiftKey = false, pointerType = ""): void {
     const tool = this.tool;
 
     // Priority: resize > move > crop drag > draft > hover.
@@ -898,7 +954,7 @@ export class Editor {
     }
 
     if (tool === "select") {
-      const resizeHover = resizeHandleAt(this.selectedHandles(), p, this.handleHitRadius());
+      const resizeHover = resizeHandleAt(this.selectedHandles(), p, this.handleHitRadius(pointerType));
       if (resizeHover) {
         this.canvas.style.cursor = this.cursorForResizeHandle(resizeHover);
       } else {
@@ -906,7 +962,7 @@ export class Editor {
         this.canvas.style.cursor = hit ? "move" : "default";
       }
     } else if (tool === "crop" && this.crop) {
-      const h = handleAt(p, this.crop.rect, this.handleHitRadius());
+      const h = handleAt(p, this.crop.rect, this.handleHitRadius(pointerType));
       this.canvas.style.cursor = h ? this.cursorForHandle(h) : "default";
     }
   }

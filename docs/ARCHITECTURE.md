@@ -282,6 +282,7 @@ capability for the Ctrl+Shift+V clipboard-image path.
 | `Esc` | Reset the crop region to the full image while cropping, else deselect |
 | `Enter` | Apply the crop region (no-op on an unshrunk full-image region) |
 | `Ctrl+S` / `Cmd+S` | Save annotated PNG via native dialog |
+| `Ctrl+N` / `Cmd+N` | New: discard the document back to the welcome/empty state (undoable; no-op while already empty). Browsers may reserve this and swallow it — the `#new-doc` toolbar button is the primary affordance |
 
 `Esc`/`Enter` are strictly optional **accelerators** for the crop tool's
 on-canvas ✗/✓ controls — the mouse alone is always sufficient to reset or
@@ -326,7 +327,18 @@ after the fact instead.
 
 ## Toolbar
 
-The toolbar's first button is **Select** (`V`), an opt-in tool alongside the three
+**New** (`#new-doc`, leftmost of all — before Capture — `Ctrl+N`/`Cmd+N`,
+TASK-36) discards the current document back to the welcome/empty state via
+`Editor.clearDocument()`: undoable (the discarded `{ imageBitmap,
+annotations }` is pushed to history first, the same mechanism as background
+replacement), and a no-op — on both the button and the shortcut — while the
+editor is already empty. `bootstrapEditor`'s `syncEmptyState()` keeps the
+button's `disabled` state and the stage's empty/loaded CSS class in sync
+after every load, undo, redo, and clear; the toolbar itself is never hidden
+on the welcome screen, so an accidental clear is always one Undo away on
+both platforms (there is no confirmation dialog — undo is the safety net).
+
+The toolbar's first *tool* button is **Select** (`V`), an opt-in tool alongside the three
 draw tools (arrow/rect/text, default). Selecting an annotation shows a dashed
 marquee and allows drag-to-move or `Del`/`Backspace` to remove it (see
 "Selection & hit-testing" above); switching tools, `Esc`, or clicking empty canvas
@@ -436,7 +448,8 @@ The web shell lives in `pwa/` (its own `index.html`, hand-rolled
 `manifest.webmanifest` + service worker, icons under `pwa/public/`) and
 builds via a separate `vite.config.web.ts` to `dist-web/` — `vite.config.ts`
 and the Tauri build are untouched. `.github/workflows/pages.yml` deploys
-`dist-web` to GitHub Pages on pushes to web-relevant paths.
+`dist-web` to GitHub Pages on release tags (`v*`), so the web app and the
+desktop app release together from one tag.
 
 Full design rationale, the `PlatformIO` contract (including the `copyPng`
 lazy-producer requirement for Safari's clipboard user-gesture window), the

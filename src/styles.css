@@ -33,6 +33,12 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #toolbar button[hidden] { display: none; }
 #toolbar button.active { background: var(--accent); }
 #toolbar button svg { display: block; }
+/* No disabled-button style existed anywhere in the app before #new-doc
+   (TASK-36); #capture's own disabled-during-capture state relied on this
+   same gap (no visible change) — add the minimal dimming here rather than
+   leaving either silently unstyled. */
+#toolbar button:disabled { opacity: 0.4; cursor: default; }
+#toolbar button:disabled:hover { background: transparent; }
 .sep { width: 1px; height: 22px; background: #45484e; margin: 0 4px; }
 
 #palette { display: flex; gap: 5px; }
@@ -62,6 +68,12 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
   touch-action: none;
   -webkit-touch-callout: none; /* no iOS press-and-hold callout/menu on the canvas */
 }
+/* Web shell only (pwa/index.html sets body.web-shell): keep the canvas edges
+   clear of the toolbar/share bar so edge-anchored touch targets — crop corner
+   handles in particular — stay reachable with a finger. A tall photo otherwise
+   fits flush against the share bar and taps on the bottom handles land on the
+   bar instead of the canvas. Desktop body has no class — this is a no-op there. */
+body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
 #stage.empty #canvas { display: none; }
 
 /* Welcome empty state, shown until an image is loaded */

@@ -4,7 +4,7 @@ title: GitHub Pages deploy workflow
 status: In Progress
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-22 03:59'
+updated_date: '2026-07-22 08:32'
 labels:
   - web
 dependencies:
@@ -22,12 +22,13 @@ Add .github/workflows/pages.yml: trigger on push to main filtered to web paths (
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A push touching web paths publishes the site to the GitHub Pages URL
-- [ ] #2 A Rust-only change does not trigger the workflow
+- [ ] #1 Pushing a release tag (v*) publishes the site to the GitHub Pages URL
+- [ ] #2 A push to main without a tag does not trigger the workflow
+- [ ] #3 workflow_dispatch still allows a manual deploy
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Workflow implemented (upload-pages-artifact@v4 verified to exist; .nojekyll step intentionally omitted — Actions-artifact deploys never run Jekyll). Remains In Progress until the first real push deploys to Pages. Requires repo Settings > Pages > Source = GitHub Actions.
+AC changed by user decision 2026-07-22: Pages deploys on release tags (v*, same trigger as release.yml) instead of path-filtered main pushes — web and desktop release together from one tag, and every deploy bumps __APP_VERSION__, which keys the SW cache purge. Workflow implemented (upload-pages-artifact@v4 verified; .nojekyll intentionally omitted). Remains In Progress until the first real tag deploys. Requires repo Settings > Pages > Source = GitHub Actions.
 <!-- SECTION:NOTES:END -->

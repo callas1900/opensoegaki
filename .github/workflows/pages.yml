@@ -1,17 +1,12 @@
 name: Deploy web app to GitHub Pages
 
+# Deploys on release tags (same trigger as release.yml) so every Pages deploy
+# carries a bumped version — which is also what keys the service worker's
+# versioned cache (soegaki-v<version>). workflow_dispatch remains as a manual
+# escape hatch.
 on:
   push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'pwa/**'
-      - 'index.html'
-      - 'vite.config.web.ts'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'tsconfig.json'
-      - '.github/workflows/pages.yml'
+    tags: ['v*']
   workflow_dispatch: {}
 
 permissions:

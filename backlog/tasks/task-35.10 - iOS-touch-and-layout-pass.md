@@ -4,7 +4,7 @@ title: iOS touch and layout pass
 status: In Progress
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-22 03:59'
+updated_date: '2026-07-22 09:07'
 labels:
   - web
 dependencies:
@@ -30,5 +30,5 @@ touch-action:none on stage/canvas, overscroll-behavior none, user-select none, m
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Implemented + reviewed (final review approved, no blocking). Code-trace verified; remains In Progress until exercised on a real iPhone per the docs/WEB.md smoke-test checklist.
+Second device fix (2026-07-22): tall-photo canvas overflowed #stage on the user's iOS Safari (bottom crop corners unreachable under the share bar) while Playwright WebKit 26 laid out correctly — version-specific %-max-height mis-resolution for replaced grid items on older Safari. Deterministic fix in main-web.ts: fitCanvasToStage() sets canvas max-width/height in px from #stage's content box (computed padding read at runtime), re-run on resize/orientationchange/visualViewport. Web-only; desktop untouched. Earlier notes: stage padding fix, double-tap + keyboard avoidance confirmed on device.
 <!-- SECTION:NOTES:END -->
