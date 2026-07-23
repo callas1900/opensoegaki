@@ -16,7 +16,9 @@ let openPanel: HTMLElement | null = null;
 const EDGE_MARGIN = 8; // keep the panel this far from the window edges
 const ANCHOR_GAP = 4;  // vertical gap between trigger and panel
 
-/** Register a trigger/panel pair. Call once per popover during app init. */
+/**
+ * Register a trigger/panel pair. Call once per popover during app init.
+ */
 export function registerPopover(trigger: HTMLButtonElement, panel: HTMLElement): void {
   panel.classList.add("popover");
   panel.hidden = true;
@@ -26,12 +28,17 @@ export function registerPopover(trigger: HTMLButtonElement, panel: HTMLElement):
 
   trigger.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (openPanel === panel) closeOpenPopover();
-    else openPopover(trigger, panel);
+    togglePopover(trigger, panel);
   });
 
   if (popovers.length === 0) installGlobalListeners();
   popovers.push({ trigger, panel });
+}
+
+/** Close `panel` if it's the currently open popover, else open it (closing whatever else was open). */
+export function togglePopover(trigger: HTMLButtonElement, panel: HTMLElement): void {
+  if (openPanel === panel) closeOpenPopover();
+  else openPopover(trigger, panel);
 }
 
 function openPopover(trigger: HTMLButtonElement, panel: HTMLElement): void {
@@ -84,6 +91,18 @@ function installGlobalListeners(): void {
     },
     true,
   );
-  window.addEventListener("resize", () => closeOpenPopover());
-  window.addEventListener("scroll", () => closeOpenPopover(), true);
+  // iOS fires `resize` (and sometimes a capture-phase `scroll`) on the
+  // window when the soft keyboard opens/closes — not just on an actual
+  // dismiss gesture. If a field inside the open panel is still focused,
+  // the user is typing, not dismissing: closing here would yank the
+  // popover out from under them mid-keystroke. Only skip the close in that
+  // one case; every other resize/scroll still closes as before. (The badge
+  // fixed-number bar's own numeric input lives outside the popover registry
+  // entirely — see src/ui/badgebar.ts — so this guard no longer concerns it.)
+  const keyboardGuardedClose = () => {
+    if (openPanel && openPanel.contains(document.activeElement)) return;
+    closeOpenPopover();
+  };
+  window.addEventListener("resize", keyboardGuardedClose);
+  window.addEventListener("scroll", keyboardGuardedClose, true);
 }

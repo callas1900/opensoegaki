@@ -18,6 +18,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+      # e2e (TASK-39): real-iPhone-viewport smoke suite against the actual
+      # web build (see docs/WEB.md's preview:web caveat — build first).
+      - run: pnpm build:web
+      - run: npx playwright install --with-deps webkit
+      - run: pnpm test:e2e
 
   rust:
     runs-on: windows-latest # primary target platform

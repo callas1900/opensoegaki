@@ -74,11 +74,21 @@ export class Editor {
   // creation sites below; always 1 when annotationScaleBaseline is null.
   private docScale = 1;
   tool: Tool = "arrow";
+  // Notified at the end of every setTool() call (TASK-40), including calls
+  // made internally by cancelCrop()/applyCrop() when they exit crop mode to
+  // "select". Lets bootstrapEditor keep the toolbar's `.active` highlight in
+  // sync with editor-initiated tool changes, not just direct button clicks.
+  onToolChanged: ((t: Tool) => void) | null = null;
   color: string = DEFAULTS.color;
   strokeWidth: number = DEFAULTS.strokeWidth;
   fontSize: number = DEFAULTS.fontSize;
   size: SizeName = "M";
   selectedId: string | null = null;
+  // Badge fixed-number mode (TASK-38): null means auto-sequence (unchanged
+  // default behavior); 0..9999 pins every subsequently placed badge to that
+  // number instead of drawing from nextBadgeNumber(). Set via the toolbar's
+  // digit-palette popover.
+  private badgeFixedNumber: number | null = null;
 
   private readonly history = new History();
   private draft: Annotation | null = null;
@@ -127,12 +137,70 @@ export class Editor {
   // torn down in render() once nothing is selected. Never part of doc,
   // history, or renderAnnotations.
   private selectionControls: HTMLButtonElement | null = null;
+  // Explicit-sizing fix for a real-iPhone bug (TASK-38 follow-up): when the
+  // badge bar opens, #stage (a flex child) shrinks in-flow, but iOS Safari
+  // does not re-resolve the canvas's `max-width/max-height: 100%` CSS
+  // percentages against the new, smaller stage box — the canvas stays large
+  // and its bottom becomes unreachable (#stage has touch-action:none, so it
+  // can't even be scrolled to). Observing the stage and writing explicit
+  // inline width/height keeps the canvas's on-screen box in sync with the
+  // stage on every layout change, independent of whether the browser
+  // decides to re-resolve percentage sizing. The CSS max-width/max-height
+  // percentages have been removed entirely (see src/styles.css #canvas) —
+  // a stale one-axis clamp from a "backstop" percentage would distort the
+  // aspect ratio, so this JS sizing is now the sole authority. Editor is the
+  // SOLE display-sizing authority for the canvas: no other module may set
+  // its inline size or max-size. A legacy pixel-max routine in main-web.ts
+  // once did (fitCanvasToStage, "round 9") and caused one-axis clamps —
+  // aspect distortion — when the stage resized without a window resize (the
+  // legacy routine only listened for window/orientation/visualViewport
+  // resize events, so it never re-ran).
+  private readonly stageResizeObserver: ResizeObserver;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas is not available");
     this.ctx = ctx;
     this.bindPointerEvents();
+    this.stageResizeObserver = new ResizeObserver(() => this.fitCanvasToStage());
+    if (this.canvas.parentElement) this.stageResizeObserver.observe(this.canvas.parentElement);
+  }
+
+  /**
+   * Explicitly size the canvas's on-screen (CSS) box to fit inside its
+   * parent stage element, applying the same shrink-to-fit-never-upscale
+   * behavior that `max-width/max-height: 100%` CSS would give — but done
+   * entirely in JS (see the `stageResizeObserver` doc comment above for why
+   * CSS percentages can't be used here). Called after every point where the
+   * canvas's width/height
+   * *attributes* change or the image is replaced/cleared, and on every
+   * observed stage resize (e.g. the badge bar opening/closing).
+   */
+  private fitCanvasToStage(): void {
+    const stage = this.canvas.parentElement;
+    if (!stage) return;
+    if (!this.hasImage()) {
+      // Canvas is display:none on the welcome screen; clear any inline size
+      // left over from a previous document so a fresh load starts clean.
+      this.canvas.style.width = "";
+      this.canvas.style.height = "";
+      return;
+    }
+    const cs = getComputedStyle(stage);
+    const cw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ch = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const scale = Math.min(1, cw / this.canvas.width, ch / this.canvas.height);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      this.canvas.style.width = "";
+      this.canvas.style.height = "";
+      return;
+    }
+    const w = `${this.canvas.width * scale}px`;
+    const h = `${this.canvas.height * scale}px`;
+    // Guard against ResizeObserver feedback loops: only write when the
+    // computed box actually differs from what's already applied.
+    if (this.canvas.style.width !== w) this.canvas.style.width = w;
+    if (this.canvas.style.height !== h) this.canvas.style.height = h;
   }
 
   /** Load a captured PNG (raw bytes) as the new background. */
@@ -205,6 +273,7 @@ export class Editor {
     this.teardownCrop();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
+    this.fitCanvasToStage();
     this.recomputeDocScale();
     // If the crop tool is active (including when it was selected before any
     // image existed, leaving initCrop() a no-op at the time), the new image
@@ -249,6 +318,7 @@ export class Editor {
       this.canvas.width = snapshot.imageBitmap.width;
       this.canvas.height = snapshot.imageBitmap.height;
     }
+    this.fitCanvasToStage();
     // TASK-36: recompute here too — undoing/redoing a background replacement
     // previously left docScale stale on web (a pre-existing latent bug: the
     // restored document's annotations are already-baked and unaffected, but
@@ -311,6 +381,7 @@ export class Editor {
     else this.teardownCrop();
     this.clearSelection();
     this.canvas.style.cursor = t === "select" ? "default" : "crosshair";
+    this.onToolChanged?.(t);
   }
 
   clearSelection(): void {
@@ -325,6 +396,16 @@ export class Editor {
     this.size = name;
     this.strokeWidth = STROKE_PRESETS[name];
     this.fontSize = FONT_PRESETS[name];
+  }
+
+  /** Current badge fixed-number mode: null (auto-sequence) or the pinned 0..9999 number. Read by the toolbar popover to highlight its active state. */
+  getBadgeFixedNumber(): number | null {
+    return this.badgeFixedNumber;
+  }
+
+  /** Pin every subsequently placed badge to `n` (clamped to an integer 0..9999); null returns to auto-sequencing. */
+  setBadgeFixedNumber(n: number | null): void {
+    this.badgeFixedNumber = n === null ? null : Math.min(9999, Math.max(0, Math.round(n)));
   }
 
   /** Export sinks call this to materialize any in-flight inline text before reading `doc`. */
@@ -359,10 +440,14 @@ export class Editor {
     this.resize = null;
     // history and doc.images deliberately preserved: the pushed snapshot references them.
     this.recomputeDocScale();
+    this.fitCanvasToStage();
     this.render();
   }
 
-  /** True while the crop tool has an active region awaiting Enter/✓ (apply) or Esc/✗ (cancel). */
+  /**
+   * True while the crop tool has an active region awaiting Enter/✓ (apply,
+   * exits to select) or Esc/✗ (cancel, exits to select).
+   */
   hasPendingCrop(): boolean {
     return this.crop !== null;
   }
@@ -416,26 +501,30 @@ export class Editor {
   }
 
   /**
-   * Reset the crop region to the full image without touching the document.
-   * Crop mode stays fully active (region, handles and ✓/✗ controls remain
-   * visible) — this is a reset, not a teardown. Returns false if there was
-   * no active crop.
+   * Discard the pending crop region and exit crop mode to the select tool
+   * (TASK-40; amends TASK-4 AC#5, which kept crop mode active on cancel).
+   * The document is never touched — only the in-flight region is dropped.
+   * Routed entirely through `setTool("select")`, which tears crop down,
+   * clears selection and renders. Re-cropping means re-activating the crop
+   * tool, which re-initializes a fresh full-image region. Returns false if
+   * there was no active crop.
    */
   cancelCrop(): boolean {
     if (!this.crop) return false;
-    const bitmap = this.doc.imageBitmap!;
-    this.crop.rect = fullImageRect(bitmap.width, bitmap.height);
-    this.crop.drag = null;
-    this.render();
+    this.setTool("select");
     return true;
   }
 
   /**
-   * Apply the pending crop: re-rasterize the background to the rectangle and
-   * translate every annotation by the crop origin, as a single undoable step
-   * (the same `{ imageBitmap, annotations }` snapshot mechanism as background
-   * replacement). No-op (resets the region to full-image, pushes no history)
-   * if the region is degenerate or already equals the untouched full image.
+   * Apply the pending crop and exit crop mode to the select tool (TASK-40;
+   * amends TASK-4 AC#5). If the region is edited (not the untouched
+   * full-image rect, and not below the minimum size), re-rasterizes the
+   * background to it and translates every annotation by the crop origin, as
+   * a single undoable step (the same `{ imageBitmap, annotations }` snapshot
+   * mechanism as background replacement). If the region is untouched or
+   * degenerate, nothing is applied and no history step is pushed — either
+   * way, crop mode exits to select. Re-cropping means re-activating the crop
+   * tool, which re-initializes a fresh full-image region.
    */
   async applyCrop(): Promise<void> {
     if (!this.crop || !this.hasImage()) return;
@@ -444,9 +533,8 @@ export class Editor {
     const rect = computeCrop({ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, src.width, src.height, MIN_CROP_PX);
     if (!rect) {
       // Region is already full-image or below the minimum size: nothing to
-      // apply. Crop mode stays active; just clear any in-flight drag.
-      this.crop.drag = null;
-      this.render();
+      // apply, but ✓ still exits crop mode (no history push).
+      this.setTool("select");
       return;
     }
     const cropped = await createImageBitmap(src, rect.x, rect.y, rect.w, rect.h);
@@ -464,18 +552,16 @@ export class Editor {
     this.doc.annotations = this.doc.annotations.map((a) => translateAnnotation(a, -rect.x, -rect.y));
     this.canvas.width = rect.w;
     this.canvas.height = rect.h;
+    this.fitCanvasToStage();
     this.selectedId = null;
     this.move = null;
     this.resize = null;
-    // Crop mode stays active on the newly-cropped image: re-arm the region to
-    // the new full image so the user can immediately crop again. Guarded:
-    // switching tools during the await tears crop down without changing the
-    // bitmap, so the apply still lands but there is no region to re-arm.
-    if (this.crop) {
-      this.crop.rect = fullImageRect(rect.w, rect.h);
-      this.crop.drag = null;
-    }
-    this.render();
+    // Exit crop mode to select on the newly-cropped image (setTool renders).
+    // Guarded: switching tools during the await already tore crop down (and,
+    // if the crop tool was re-armed for a *different* image meanwhile, that
+    // state must not be clobbered here) — in that case just render directly.
+    if (this.crop) this.setTool("select");
+    else this.render();
   }
 
   private selectedAnnotation(): Annotation | undefined {
@@ -860,12 +946,17 @@ export class Editor {
     const base = { id: nextId(), color: this.color, strokeWidth: this.strokeWidth * this.docScale };
 
     if (tool === "badge") {
+      // Fixed-number mode (TASK-38): every click stamps the pinned number as
+      // a manual badge, exempt from auto-sequencing; unset (null) is the
+      // unchanged auto-sequence behavior.
+      const fixed = this.badgeFixedNumber;
       this.commit({
         ...base,
         kind: "badge",
         at: p,
-        number: nextBadgeNumber(this.doc.annotations),
+        number: fixed !== null ? fixed : nextBadgeNumber(this.doc.annotations),
         radius: BADGE_RADIUS_PRESETS[this.size] * this.docScale,
+        ...(fixed !== null ? { manual: true } : {}),
       });
       this.render();
       return;

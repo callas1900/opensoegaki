@@ -48,6 +48,9 @@ export interface BadgeAnnotation extends AnnotationBase {
   at: Point;       // circle center
   number: number;  // 1-based display value
   radius: number;  // baked from BADGE_RADIUS_PRESETS at creation
+  // Manual (fixed-number) badges have a user-pinned `number` and are exempt
+  // from auto-sequencing: nextBadgeNumber/renumberBadges skip them entirely.
+  manual?: boolean;
 }
 
 export interface ImageAnnotation extends AnnotationBase {
@@ -149,19 +152,24 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number): Anno
   }
 }
 
-/** 1-based number the next placed badge should display: count of existing badges + 1. */
+/**
+ * 1-based number the next auto-sequenced badge should display: count of
+ * existing auto badges (`!a.manual`) + 1. Manual (fixed-number) badges are
+ * not counted — they don't participate in the sequence.
+ */
 export function nextBadgeNumber(list: Annotation[]): number {
-  return list.filter((a) => a.kind === "badge").length + 1;
+  return list.filter((a) => a.kind === "badge" && !a.manual).length + 1;
 }
 
 /**
- * Return a new array where badge annotations are reassigned `number` 1..N in
- * array order; non-badge annotations pass through unchanged. Never mutates
- * the input array or its elements.
+ * Return a new array where auto-sequenced badge annotations (`!a.manual`) are
+ * reassigned `number` 1..N in array order; manual badges and non-badge
+ * annotations pass through unchanged. Never mutates the input array or its
+ * elements.
  */
 export function renumberBadges(list: Annotation[]): Annotation[] {
   let n = 0;
-  return list.map((a) => (a.kind === "badge" ? { ...a, number: ++n } : a));
+  return list.map((a) => (a.kind === "badge" && !a.manual ? { ...a, number: ++n } : a));
 }
 
 /**

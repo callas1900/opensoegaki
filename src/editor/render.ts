@@ -12,6 +12,36 @@ export function fontString(fontSize: number): string {
   return `bold ${fontSize}px ${FONT_STACK}`;
 }
 
+// Lazily-created offscreen 2D context used only for text-width measurements
+// taken outside of a live draw call (badgeHalfWidth below, called from
+// hittest.ts/canvas.ts, which have no CanvasRenderingContext2D of their own
+// to measure with).
+let measureCtx: CanvasRenderingContext2D | null = null;
+function getMeasureCtx(): CanvasRenderingContext2D {
+  if (!measureCtx) {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) throw new Error("2D canvas is not available");
+    measureCtx = ctx;
+  }
+  return measureCtx;
+}
+
+/**
+ * Half-width of a badge's visible shape, in bitmap px. Auto badges are
+ * perfect circles, so this is just `a.radius`. Manual (fixed-number) badges
+ * are drawn as a rounded rect that widens to fit the number instead of
+ * shrinking the font (see `drawBadge`); this mirrors that same layout math so
+ * hit-testing and selection bounds (hittest.ts's `boundsOf`, canvas.ts) never
+ * disagree with rendering about where a manual badge's edge is.
+ */
+export function badgeHalfWidth(a: BadgeAnnotation): number {
+  if (!a.manual) return a.radius;
+  const ctx = getMeasureCtx();
+  ctx.font = fontString(a.radius * 1.2);
+  const textWidth = ctx.measureText(String(a.number)).width;
+  return Math.max(a.radius, textWidth / 2 + a.radius * 0.55);
+}
+
 export function renderAnnotations(
   ctx: CanvasRenderingContext2D,
   list: Annotation[],
@@ -121,21 +151,49 @@ function drawHighlight(ctx: CanvasRenderingContext2D, a: HighlighterAnnotation):
   ctx.restore();
 }
 
-/** Filled circle + white ring + centered number. save/restore is load-bearing: textAlign/textBaseline must not leak into drawText. */
+/**
+ * Auto badges: filled circle + white ring + centered number, shrinking the
+ * font to fit if a multi-digit number would overflow the fixed radius.
+ * Manual (fixed-number) badges: same fill/ring/text treatment, but drawn as a
+ * rounded rect that widens (via `badgeHalfWidth`) to fit the number at the
+ * normal badge font size instead of shrinking it — these numbers are the
+ * point (categorizing items), so they stay full-size and legible.
+ * save/restore is load-bearing: textAlign/textBaseline must not leak into drawText.
+ */
 function drawBadge(ctx: CanvasRenderingContext2D, a: BadgeAnnotation): void {
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
-  ctx.fillStyle = a.color;
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
-  ctx.lineWidth = Math.max(2, a.radius * 0.15);
-  ctx.stroke();
-  ctx.font = fontString(a.radius * 1.2);
+  const text = String(a.number);
+  const ringWidth = Math.max(2, a.radius * 0.15);
+
+  if (a.manual) {
+    const hw = badgeHalfWidth(a);
+    ctx.beginPath();
+    ctx.roundRect(a.at.x - hw, a.at.y - a.radius, hw * 2, a.radius * 2, a.radius * 0.45);
+    ctx.fillStyle = a.color;
+    ctx.fill();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = ringWidth;
+    ctx.stroke();
+    ctx.font = fontString(a.radius * 1.2);
+  } else {
+    ctx.beginPath();
+    ctx.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
+    ctx.fillStyle = a.color;
+    ctx.fill();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = ringWidth;
+    ctx.stroke();
+    ctx.font = fontString(a.radius * 1.2);
+    const width = ctx.measureText(text).width;
+    if (width > a.radius * 1.6) {
+      ctx.font = fontString(a.radius * 1.2 * ((a.radius * 1.6) / width));
+    }
+  }
+
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = contrastText(a.color);
-  ctx.fillText(String(a.number), a.at.x, a.at.y);
+  ctx.fillText(text, a.at.x, a.at.y);
   ctx.restore();
 }
 

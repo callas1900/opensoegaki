@@ -33,6 +33,11 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #toolbar button[hidden] { display: none; }
 #toolbar button.active { background: var(--accent); }
 #toolbar button svg { display: block; }
+/* Badge tool button (src/ui/badgebar.ts): two stacked SVGs toggled via
+   `hidden` for the auto/fixed icon swap. `#toolbar button svg` above
+   outranks the UA [hidden] rule the same way button[hidden] does (see
+   comment above) — same explicit override needed here. */
+#toolbar button svg[hidden] { display: none; }
 /* No disabled-button style existed anywhere in the app before #new-doc
    (TASK-36); #capture's own disabled-during-capture state relied on this
    same gap (no visible change) — add the minimal dimming here rather than
@@ -53,6 +58,71 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #sizes button:hover { background: #3a3d42; }
 #sizes button.active { background: var(--accent); }
 
+/* Badge fixed-number bottom bar (TASK-38 round 5): a persistent mode
+   (src/ui/badgebar.ts), not a flyout — an in-flow flex child of #app,
+   placed right after #share-bar, which it REPLACES while open (see the
+   body.badge-bar-open rule below): #stage shrinks via its `flex: 1` to
+   make room, so the whole photo stays visible and tappable underneath the
+   bar instead of being covered by it. Width arithmetic for the digit grid
+   (and, since round 5, the custom-number row, which now shares the same
+   5-column grid so its chip is sized identically to a digit chip):
+   min = 5*44 + 4*6 = 244px; on a 390px iPhone viewport minus 24px padding =
+   366px inner, (366-24)/5 = 68.4px per column >= the 44px minimum, so no
+   overflow; capped at 420px so desktop chips don't stretch too wide.
+   All chip/button colors follow the neutral `#sizes`-button family — only
+   `.active` gets the accent fill, everything else is transparent + a
+   neutral border until selected. */
+#badge-bar {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  background: var(--panel); border-top: 1px solid #45484e;
+}
+#badge-bar[hidden] { display: none; } /* flex above outranks the UA [hidden] rule */
+/* While the fixed-number bar is open it replaces #share-bar (both are
+   #app flex children docked at the bottom) so the stage — and thus the
+   whole image — stays fully visible and tappable. */
+body.badge-bar-open #share-bar { display: none; }
+#badge-bar-header { display: flex; justify-content: flex-end; }
+#badge-bar-close {
+  width: 44px; height: 44px; border: none; border-radius: 8px;
+  background: transparent; color: var(--fg); font-size: 18px; cursor: pointer;
+}
+#badge-bar-close:hover { background: #3a3d42; }
+
+#badge-digits { display: grid; grid-template-columns: repeat(5, minmax(44px, 1fr)); gap: 6px; width: 100%; max-width: 420px; margin: 0 auto; }
+/* Shared so the custom chip's border/radius/font/min-height can never drift
+   from the digit chips (round 5 requires them pixel-identical in size). */
+#badge-digits button, #badge-num-chip {
+  min-height: 44px; border: 1px solid #45484e; border-radius: 8px;
+  background: transparent; color: var(--fg); font-size: 15px; font-weight: 700; cursor: pointer;
+}
+#badge-digits button:hover, #badge-num-chip:hover { background: #3a3d42; }
+#badge-digits button.active, #badge-num-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Same 5-column grid as #badge-digits (not flex) so the chip's width/height
+   follow the exact same per-column formula as a digit chip: the input
+   spans the first 4 columns, the chip takes the 5th. */
+#badge-num-row { display: grid; grid-template-columns: repeat(5, minmax(44px, 1fr)); gap: 6px; width: 100%; max-width: 420px; margin: 0 auto; }
+#badge-num-input {
+  grid-column: 1 / 5; min-width: 0; min-height: 44px; border: 1px solid #45484e; border-radius: 6px;
+  background: var(--bg); color: var(--fg); font-size: 16px; padding: 0 10px;
+}
+#badge-num-chip { grid-column: 5; }
+/* Same disabled idiom as #toolbar button:disabled: dim it and kill hover
+   feedback while there's nothing to commit (empty input, no pinned custom
+   value yet). */
+#badge-num-chip:disabled { opacity: 0.4; cursor: default; }
+#badge-num-chip:disabled:hover { background: transparent; }
+/* Step the font down as the typed/pinned label grows past 2 digits so 3-4
+   digit numbers still fit the digit-chip-sized box; data-len is set by
+   refreshChipLabel() in badgebar.ts. Chosen over inline style.fontSize to
+   keep sizing rules in CSS alongside the rest of the chip's styling. */
+#badge-num-chip[data-len="3"] { font-size: 12px; }
+#badge-num-chip[data-len="4"] { font-size: 10px; }
+
 #stage {
   flex: 1; overflow: auto; display: grid; place-items: center; position: relative;
   /* iPhone (TASK-35.10): no pinch/pan gestures or pull-to-refresh while
@@ -63,8 +133,14 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
   -webkit-user-select: none;
   user-select: none;
 }
+/* Display size (style.width/height) is set entirely by JS in
+   Editor.fitCanvasToStage() (src/editor/canvas.ts) — iOS Safari fails to
+   re-resolve percentage max-width/max-height when #stage's box changes
+   (the bug fitCanvasToStage exists to work around), so a CSS max-% here
+   would clamp against stale dimensions and distort the aspect ratio on
+   just one axis. Do NOT reintroduce max-width/max-height as a "backstop". */
 #canvas {
-  max-width: 100%; max-height: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  box-shadow: 0 4px 24px rgba(0,0,0,.5);
   touch-action: none;
   -webkit-touch-callout: none; /* no iOS press-and-hold callout/menu on the canvas */
 }

@@ -26,5 +26,10 @@ Thumbs.db
 *.log
 coverage/
 
+# --- Playwright (TASK-39 e2e suite) ---
+test-results/
+playwright-report/
+blob-report/
+
 # --- Claude Code local state (keep agents/, ignore personal settings) ---
 .claude/settings.local.json

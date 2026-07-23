@@ -145,6 +145,13 @@ describe("nextBadgeNumber", () => {
     const a1: ArrowAnnotation = { id: "a1", kind: "arrow", color: "#e8465a", strokeWidth: 6, from: { x: 0, y: 0 }, to: { x: 1, y: 1 } };
     expect(nextBadgeNumber([b1, a1, b2])).toBe(3);
   });
+
+  it("ignores manual badges: [auto, manual, manual] -> next is 2", () => {
+    const auto: BadgeAnnotation = { id: "b1", kind: "badge", color: "#ED107B", strokeWidth: 6, at: { x: 0, y: 0 }, number: 1, radius: 20 };
+    const manual1: BadgeAnnotation = { id: "b2", kind: "badge", color: "#ED107B", strokeWidth: 6, at: { x: 0, y: 0 }, number: 1, radius: 20, manual: true };
+    const manual2: BadgeAnnotation = { id: "b3", kind: "badge", color: "#ED107B", strokeWidth: 6, at: { x: 0, y: 0 }, number: 1, radius: 20, manual: true };
+    expect(nextBadgeNumber([auto, manual1, manual2])).toBe(2);
+  });
 });
 
 describe("renumberBadges", () => {
@@ -175,6 +182,34 @@ describe("renumberBadges", () => {
     const result = renumberBadges(withoutMiddle);
     expect((result[0] as BadgeAnnotation).number).toBe(1);
     expect((result[1] as BadgeAnnotation).number).toBe(2);
+  });
+
+  function makeManualBadge(id: string, number: number): BadgeAnnotation {
+    return { id, kind: "badge", color: "#ED107B", strokeWidth: 6, at: { x: 0, y: 0 }, number, radius: 20, manual: true };
+  }
+
+  it("compacts only auto badges and leaves manual numbers untouched, regardless of array position", () => {
+    const list: Annotation[] = [makeManualBadge("m1", 7), makeBadge("b1", 5), makeManualBadge("m2", 3), makeBadge("b2", 9)];
+    const result = renumberBadges(list);
+    expect((result[0] as BadgeAnnotation).number).toBe(7); // manual, unchanged
+    expect((result[1] as BadgeAnnotation).number).toBe(1); // auto -> 1
+    expect((result[2] as BadgeAnnotation).number).toBe(3); // manual, unchanged
+    expect((result[3] as BadgeAnnotation).number).toBe(2); // auto -> 2
+  });
+
+  it("only-manual list: numbers unchanged", () => {
+    const list: Annotation[] = [makeManualBadge("m1", 7), makeManualBadge("m2", 3)];
+    const result = renumberBadges(list);
+    expect((result[0] as BadgeAnnotation).number).toBe(7);
+    expect((result[1] as BadgeAnnotation).number).toBe(3);
+  });
+
+  it("only-auto list: behaves exactly as before (regression)", () => {
+    const list: Annotation[] = [makeBadge("b1", 5), makeBadge("b2", 9), makeBadge("b3", 2)];
+    const result = renumberBadges(list);
+    expect((result[0] as BadgeAnnotation).number).toBe(1);
+    expect((result[1] as BadgeAnnotation).number).toBe(2);
+    expect((result[2] as BadgeAnnotation).number).toBe(3);
   });
 });
 

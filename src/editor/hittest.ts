@@ -6,7 +6,7 @@
  */
 import type { Annotation, Point } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
-import { fontString } from "./render";
+import { badgeHalfWidth, fontString } from "./render";
 
 export interface Bounds {
   x: number;
@@ -42,8 +42,13 @@ export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Boun
       const maxY = Math.max(...ys);
       return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
     }
-    case "badge":
-      return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
+    case "badge": {
+      // Auto badges: hw === a.radius, so this is exactly the old circle
+      // bbox. Manual badges widen to fit their number (see badgeHalfWidth's
+      // doc comment) — same widened box drawBadge renders.
+      const hw = badgeHalfWidth(a);
+      return { x: a.at.x - hw, y: a.at.y - a.radius, w: 2 * hw, h: 2 * a.radius };
+    }
     case "image":
       return { x: a.at.x, y: a.at.y, w: a.width, h: a.height };
   }
@@ -90,8 +95,16 @@ function hitsAnnotation(
       }
       return minDist <= tolerance + (a.strokeWidth * HIGHLIGHTER_WIDTH_SCALE) / 2;
     }
-    case "badge":
+    case "badge": {
+      // Manual badges are wider than tall (rounded rect, see drawBadge/
+      // badgeHalfWidth) and filled, so a bbox hit (like text/image below)
+      // matches their visible shape; auto badges stay a plain circle test.
+      if (a.manual) {
+        const b = boundsOf(a, measure);
+        return pointInBounds(p, inflate(b, tolerance));
+      }
       return Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance;
+    }
     case "image": {
       // Images are selectable/movable/deletable/resizable via the standard
       // select-tool machinery (translateAnnotation, deleteSelected and

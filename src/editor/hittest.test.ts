@@ -144,6 +144,12 @@ describe("hitTest highlight", () => {
   });
 });
 
+// Manual (fixed-number) badge hit-testing/bounds (TASK-38) is not covered
+// here: it routes through render.ts's `badgeHalfWidth`, which lazily creates
+// a real offscreen <canvas> to measure text — unavailable in this suite's
+// `environment: "node"` (vitest.config.ts), and not worth heavy-mocking
+// `document`/canvas just for this. Auto badges (below) are unaffected and
+// keep the same fake `measure` fixture as every other kind.
 describe("hitTest badge", () => {
   it("the center hits", () => {
     const b = badge({ x: 50, y: 50 }, 20);

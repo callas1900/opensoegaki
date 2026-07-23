@@ -9,6 +9,7 @@ import { exportPng } from "./editor/exporter";
 import { PALETTE, type SizeName, type Tool } from "./editor/model";
 import { decodeClampedBitmap } from "./editor/downscale";
 import { registerPopover, closeOpenPopover } from "./ui/popover";
+import { createBadgeBar } from "./ui/badgebar";
 import type { Capabilities, PlatformIO } from "./platform/io";
 
 /** Handle returned to entry points for the platform-specific wiring they keep (desktop capture button, etc.). */
@@ -38,6 +39,8 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
   editor.annotationScaleBaseline = io.annotationScaleBaseline;
   editor.setTool(editor.tool); // apply initial cursor feedback for the default tool
 
+  const badgeBar = createBadgeBar(editor);
+
   const colorBtn = document.querySelector<HTMLButtonElement>("#color-btn")!;
   const colorPopover = document.querySelector<HTMLDivElement>("#color-popover")!;
   const colorChip = document.querySelector<HTMLSpanElement>("#color-chip")!;
@@ -50,11 +53,26 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
 
   // ---- toolbar ---------------------------------------------------------------
 
+  // Keeps the toolbar's `.active` highlight in sync with every tool change,
+  // including ones the editor makes on its own (TASK-40: cancelCrop()/
+  // applyCrop() now exit crop mode via setTool("select"), not just direct
+  // button clicks handled below).
+  editor.onToolChanged = (t) => {
+    document.querySelector("button.tool.active")?.classList.remove("active");
+    document.querySelector(`button.tool[data-tool="${t}"]`)?.classList.add("active");
+    badgeBar.handleToolChange(t);
+  };
+
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
     btn.addEventListener("click", () => {
+      if (btn.dataset.tool === "badge" && editor.tool === "badge") {
+        // Badge tool is already active: a second tap opens/closes the
+        // fixed-number bar instead of re-selecting the already-selected tool
+        // (which would also incorrectly closeOpenPopover() below).
+        badgeBar.toggle();
+        return;
+      }
       editor.setTool(btn.dataset.tool as Tool);
-      document.querySelector("button.tool.active")?.classList.remove("active");
-      btn.classList.add("active");
       btn.blur(); // so pressing Enter next doesn't re-activate this button
       closeOpenPopover();
     });
@@ -140,7 +158,7 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
     // instead; Escape is handled by the editor's own keydown listener.
     if (isTypingTarget(e.target)) return;
 
-    if (e.key === "Escape" && closeOpenPopover()) {
+    if (e.key === "Escape" && (closeOpenPopover() || badgeBar.close())) {
       e.preventDefault();
       return;
     }

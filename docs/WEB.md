@@ -137,6 +137,11 @@ No new Tauri commands; the desktop IPC surface is unchanged.
   and imports `../src/main-web.ts`.
 - Scripts: `build:web` = `tsc --noEmit && vite build --config vite.config.web.ts`;
   `preview:web` = `vite preview --config vite.config.web.ts`.
+- **Caveat:** `preview:web` only serves the existing `dist-web/` output — it
+  does not rebuild. A device/browser check against `preview:web` alone can
+  silently run stale code after an edit; always run
+  `pnpm build:web && pnpm preview:web --host` (`--host` exposes the preview
+  server on the LAN for a real-device check) instead of `preview:web` on its own.
 
 ### PWA — hand-rolled manifest + minimal service worker (no vite-plugin-pwa)
 

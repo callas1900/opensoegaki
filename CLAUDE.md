@@ -24,6 +24,24 @@ Rules:
    non-trivial changes. Fix blocking issues via `implementer`, then re-review.
 4. If `implementer` reports a design-level problem, route it back to `architect` —
    do not let Sonnet improvise the design, and do not silently fix it in the main session.
+5. **UI reviews include a rendered check** (added after TASK-38/39: two iPhone-visible
+   bugs passed a code-trace-only review). For any diff touching HTML/CSS/UI:
+   - Re-do the arithmetic on fixed-dimension containers (sum of the children's
+     minimum sizes vs. the container's effective width).
+   - Audit global resize/scroll/focus/visualViewport handlers against iOS
+     soft-keyboard behavior (opening the keyboard fires both resize and scroll).
+     Sweep ALL of `src/` — including the entry points `main.ts`/`main-web.ts`,
+     not just the module being changed.
+   - One property, one owner: before introducing code that writes a style/layout
+     property (canvas size, positions, max-sizes), grep for existing writers of
+     the same property anywhere in `src/`. Two independent authorities caused
+     TASK-38's aspect-ratio regression (a legacy pixel-max routine in
+     main-web.ts fought Editor.fitCanvasToStage); the survivor must be the only
+     writer, and the loser deleted — not left as a "fallback".
+   - Run the Playwright iPhone-viewport smoke suite (`pnpm test:e2e`) before sign-off.
+   - Every review verdict must state its verification scope — `APPROVE (code-trace
+     only)`, `(browser-verified)`, or `(device-verified)`. A code-trace-only APPROVE
+     is not a substitute for running the app.
 
 ## Acceptance criteria are regression contracts
 
