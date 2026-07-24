@@ -85,6 +85,10 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
    #app flex children docked at the bottom) so the stage — and thus the
    whole image — stays fully visible and tappable. */
 body.badge-bar-open #share-bar { display: none; }
+/* The open badge bar sits above #install-hint's z-index (20) and would
+   otherwise overlap it; the install hint is one-time and non-essential, so
+   just hide it while the bar is open. */
+body.badge-bar-open #install-hint { display: none; }
 #badge-bar-header { display: flex; justify-content: flex-end; }
 #badge-bar-close {
   width: 44px; height: 44px; border: none; border-radius: 8px;
@@ -173,21 +177,57 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
 .welcome-version { margin: 0; font-size: 11px; color: #5c6066; }
 
 /* Web-only one-time iOS "Add to Home Screen" hint (absent from the desktop
-   shell's markup). Bottom-anchored so it clears the toolbar and the soft
-   keyboard's usual resting position. */
+   shell's markup). Floats ABOVE #share-bar (~47px tall at safe-area 0), so a
+   60px offset plus the safe-area inset always clears it. Accent card (same CTA
+   idiom as #welcome-pick) so it can't merge with the panel-colored bars.
+   Whole card is tappable to dismiss (see main-web.ts). */
 #install-hint {
-  position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 20;
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
+  bottom: calc(60px + env(safe-area-inset-bottom));
+  z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 14px; border-radius: 8px;
-  background: var(--panel); color: var(--fg); border: 1px solid #45484e;
-  box-shadow: 0 6px 24px rgba(0,0,0,.5);
-  font-size: 14px;
-  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  padding: 16px 12px 16px 18px;
+  border-radius: 14px;
+  background: var(--accent); color: #fff;
+  border: 1px solid rgba(255,255,255,.3);
+  box-shadow: 0 12px 40px rgba(0,0,0,.7);
+  font-size: 17px; line-height: 1.5; font-weight: 500;
+  cursor: pointer;
+  animation: install-hint-in 0.35s ease-out;
 }
+#install-hint strong { font-weight: 700; }
 #install-hint[hidden] { display: none; }
+#install-hint-icon { font-size: 30px; flex-shrink: 0; }
+#install-hint .install-hint-title { display: block; font-size: 19px; font-weight: 800; margin-bottom: 2px; }
 #install-hint-dismiss {
-  border: none; background: transparent; color: var(--fg); font-size: 18px;
-  line-height: 1; cursor: pointer; padding: 2px 6px; flex-shrink: 0;
+  width: 44px; height: 44px; flex-shrink: 0;
+  border: none; border-radius: 10px;
+  background: rgba(255,255,255,0.18); color: #fff;
+  font-size: 22px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+@keyframes install-hint-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Phone landscape (844x390, 812x375, 667x375): no fixed bottom-anchored card
+   can clear BOTH #share-bar (in-flow, ~48px + safe area, hence the 60px
+   offset) and #welcome-pick, the welcome screen's only CTA. The card floors
+   at ~46px (dismiss target + padding + border) against a ~43px budget, and
+   #welcome-pick's y is not even constant: #stage scrolls when the welcome
+   block overflows a short viewport, and #toolbar wraps at narrow widths.
+   So suppress the hint below phone-landscape height instead of chasing
+   geometry. CSS-only on purpose (no resize listener, cf. TASK-38/39): it
+   returns on rotation within the same session, and the dismissed flag is
+   written only on a real dismissal, so launching in landscape consumes
+   nothing. 500px separates every iPhone landscape height (<=430) from every
+   iPhone/iPad portrait height (>=667); iPad landscape keeps the hint. */
+@media (max-height: 500px) {
+  #install-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #install-hint { animation: none; }
 }
 .welcome-hint strong { color: #c9cdd2; }
 #stage:not(.empty) #welcome { display: none; }

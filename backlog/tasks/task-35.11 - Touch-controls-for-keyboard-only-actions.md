@@ -1,10 +1,10 @@
 ---
 id: TASK-35.11
 title: Touch controls for keyboard-only actions
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-22 03:59'
+updated_date: '2026-07-24 09:57'
 labels:
   - web
 dependencies:
@@ -22,13 +22,17 @@ Add a delete button visible while a selection exists (replaces Delete/Backspace)
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 On iPhone an annotation can be selected and deleted without a keyboard
-- [ ] #2 On iPhone a crop can be applied and cancelled without a keyboard
-- [ ] #3 Desktop keyboard shortcuts keep working unchanged
+- [x] #1 On iPhone an annotation can be selected and deleted without a keyboard
+- [x] #2 On iPhone a crop can be applied and cancelled without a keyboard
+- [x] #3 Desktop keyboard shortcuts keep working unchanged
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented + reviewed (final review approved, no blocking). Code-trace verified; remains In Progress until exercised on a real iPhone per the docs/WEB.md smoke-test checklist.
+
+2026-07-24 device verification by user (iPhone): annotation select+delete and crop apply/cancel all work touch-only, no keyboard. Remaining: AC#3 desktop shortcuts (Windows pnpm tauri dev pass).
+
+2026-07-24 Windows verification by user: desktop keyboard shortcuts unchanged (Ctrl+Z/Y/C/S/V/Shift+V, Del, Esc, Enter). All ACs exercised -> Done.
 <!-- SECTION:NOTES:END -->

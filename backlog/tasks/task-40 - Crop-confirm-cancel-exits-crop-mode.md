@@ -1,10 +1,10 @@
 ---
 id: TASK-40
 title: Crop confirm/cancel exits crop mode
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-23 10:28'
-updated_date: '2026-07-23 10:36'
+updated_date: '2026-07-24 09:40'
 labels:
   - ui
 dependencies: []
@@ -21,7 +21,7 @@ On iPhone (and desktop), pressing the crop ✗ or ✓ control with an unedited r
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Pressing ✗ (or Esc) while crop is active exits crop mode: overlay and controls disappear, document unchanged, select tool becomes active in the editor and in the toolbar
-- [ ] #2 Pressing ✓ (or Enter) with an edited region applies the crop as one undoable step and exits crop mode to the select tool
+- [x] #2 Pressing ✓ (or Enter) with an edited region applies the crop as one undoable step and exits crop mode to the select tool
 - [x] #3 Pressing ✓ (or Enter) with an untouched full-image region exits crop mode without pushing an undo step
 - [x] #4 Toolbar active-button highlight follows the editor-initiated tool change
 - [x] #5 Playwright iPhone-viewport e2e covers: load image, activate crop, ✗ dismisses; reopen crop, ✓ (no edits) dismisses
@@ -31,4 +31,6 @@ On iPhone (and desktop), pressing the crop ✗ or ✓ control with an unedited r
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-07-23: Implemented (canvas.ts cancelCrop/applyCrop route through setTool('select'); new Editor.onToolChanged callback syncs toolbar highlight; app.ts click handler simplified). Reviewer verdict: APPROVE (browser-verified) — pnpm check clean, unit 139/139, Playwright iPhone-webkit e2e 5/5 incl. 2 new crop-dismiss specs. AC#2 (edited-region apply + single undo) is code-trace-verified only — no e2e drags a handle yet; left unchecked pending device/desktop verification. Reviewer follow-up ideas: e2e for edited-region apply+undo, Ctrl+Z assertion for the no-op case. dist-web rebuilt after the change.
+
+2026-07-24 device verification by user (iPhone): edited crop region + ✓ applies as one undoable step (single undo fully restores). All ACs exercised → Done.
 <!-- SECTION:NOTES:END -->

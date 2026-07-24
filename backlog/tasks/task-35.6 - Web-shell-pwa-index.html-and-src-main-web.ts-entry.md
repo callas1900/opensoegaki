@@ -1,10 +1,10 @@
 ---
 id: TASK-35.6
 title: Web shell pwa/index.html and src/main-web.ts entry
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-22 03:59'
+updated_date: '2026-07-24 09:40'
 labels:
   - web
 dependencies:
@@ -23,12 +23,16 @@ Add pwa/index.html reusing the shared toolbar markup and importing ../src/main-w
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 App renders and all editing tools work in a desktop browser via the web entry
-- [ ] #2 dist-web bundle contains no @tauri-apps code (grep of build output)
+- [x] #1 App renders and all editing tools work in a desktop browser via the web entry
+- [x] #2 dist-web bundle contains no @tauri-apps code (grep of build output)
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented + reviewed; dist-web verified free of Tauri code; preview fetch smoke OK. Remains In Progress until editing tools are exercised in a real browser.
+
+2026-07-24 AC#2 verified by grep: dist-web/assets bundle and sw.js contain zero @tauri-apps/__TAURI references.
+
+2026-07-24 browser verification by user: app renders and all editing tools work in a desktop browser via the web entry. All ACs exercised → Done.
 <!-- SECTION:NOTES:END -->

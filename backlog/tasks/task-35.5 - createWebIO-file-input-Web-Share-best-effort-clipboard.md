@@ -1,10 +1,10 @@
 ---
 id: TASK-35.5
 title: 'createWebIO: file input, Web Share, best-effort clipboard'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-22 03:59'
+updated_date: '2026-07-24 09:40'
 labels:
   - web
 dependencies:
@@ -22,13 +22,15 @@ Add src/platform/web.ts. pickImage via hidden <input type=file accept=image/*> (
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 On iOS Safari picking from Photos loads the image
-- [ ] #2 Save opens the share sheet and can save to Photos; falls back to download where share is unavailable
-- [ ] #3 Copy either works or the Copy button is hidden (no broken button)
+- [x] #1 On iOS Safari picking from Photos loads the image
+- [x] #2 Save opens the share sheet and can save to Photos; falls back to download where share is unavailable
+- [x] #3 Copy either works or the Copy button is hidden (no broken button)
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented + reviewed (3 rounds incl. lazy-producer copyPng contract per architect ruling, pick cancel double-fire fix, deferred blob revoke). Remains In Progress until exercised on iOS Safari (photo pick / share sheet / copy).
+
+2026-07-24 device verification by user (iPhone): Photos pick loads image; share sheet saves to Photos; Copy button state is coherent (works or hidden, no broken button). All ACs exercised → Done.
 <!-- SECTION:NOTES:END -->

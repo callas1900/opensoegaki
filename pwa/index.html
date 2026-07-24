@@ -149,8 +149,12 @@
         </div>
       </section>
     </div>
-    <div id="install-hint" hidden>
-      <span>Install: tap <strong>Share</strong> → <strong>Add to Home Screen</strong></span>
+    <div id="install-hint" role="status" hidden>
+      <span id="install-hint-icon" aria-hidden="true">📲</span>
+      <span>
+        <strong class="install-hint-title">Install this app</strong>
+        Tap <strong>Share</strong> → <strong>Add to Home Screen</strong>
+      </span>
       <button id="install-hint-dismiss" aria-label="Dismiss">×</button>
     </div>
     <script type="module" src="../src/main-web.ts"></script>

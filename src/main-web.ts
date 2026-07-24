@@ -65,13 +65,15 @@ function maybeShowInstallHint(): void {
   }
 
   hint.hidden = false;
-  document.querySelector<HTMLButtonElement>("#install-hint-dismiss")?.addEventListener("click", () => {
+  // Tap anywhere on the card dismisses it; the visible × button remains as the
+  // accessible, keyboard-reachable control — its clicks bubble to this listener.
+  hint.addEventListener("click", () => {
     hint.hidden = true;
     try {
       localStorage.setItem(INSTALL_HINT_DISMISSED_KEY, "1");
     } catch {
       // Best-effort only: if storage is blocked, the hint just reappears
-      // next launch — acceptable, not worth surfacing an error for.
+      // next launch — acceptable.
     }
   });
 }
