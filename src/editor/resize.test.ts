@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   resizeHandlesFor,
   handleAt,
+  nearestHandle,
   applyResize,
+  rotateHandleFor,
+  anchorPointFor,
   MIN_RECT_PX,
   MIN_IMAGE_PX,
   MIN_ARROW_LEN,
@@ -12,7 +15,9 @@ import {
   MAX_BADGE_RADIUS,
   type HandleSpec,
 } from "./resize";
-import { boundsOf, type Bounds } from "./hittest";
+import { boundsOf, type Bounds } from "./bounds";
+import { pivotOf, reanchorDelta, rotatePoint, unrotatePoint } from "./rotate";
+import { translateAnnotation } from "./model";
 import type {
   ArrowAnnotation,
   RectAnnotation,
@@ -139,6 +144,44 @@ describe("handleAt", () => {
   it("returns the nearest handle when two are within radius", () => {
     // Between nw (100,100) and n (200,100) but much closer to nw.
     expect(handleAt(handles, { x: 105, y: 100 }, HIT_RADIUS)).toBe("nw");
+  });
+});
+
+// TASK-41 round 2: nearestHandle is the one owner of "nearest handle within
+// radius, plus how far" — handleAt (above) is now a thin delegate to it, and
+// canvas.ts's knob-vs-resize-handle tie-break (rotateOrResizeTarget) is built
+// on it directly.
+describe("nearestHandle", () => {
+  const r = rect({ x: 100, y: 100 }, { x: 300, y: 250 });
+  const b = boundsOf(r, measure);
+  const handles = resizeHandlesFor(r, b);
+  const HIT_RADIUS = 12;
+
+  it("returns the nearest handle's id and its distance", () => {
+    const result = nearestHandle(handles, { x: 103, y: 97 }, HIT_RADIUS);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("nw");
+    expect(result!.dist).toBeCloseTo(Math.hypot(3, 3), 5);
+  });
+
+  it("returns null outside every handle's radius", () => {
+    expect(nearestHandle(handles, { x: 200, y: 175 }, HIT_RADIUS)).toBeNull();
+  });
+
+  it("tie-break: the strictly nearer of two in-radius handles wins", () => {
+    // Between nw (100,100) and n (200,100) but much closer to nw.
+    const result = nearestHandle(handles, { x: 105, y: 100 }, HIT_RADIUS);
+    expect(result!.id).toBe("nw");
+    expect(result!.dist).toBeCloseTo(5, 5);
+  });
+
+  it("a handle exactly at hitRadius is excluded (strict less-than, matches the pre-existing handleAt semantics)", () => {
+    expect(nearestHandle(handles, { x: 100 + HIT_RADIUS, y: 100 }, HIT_RADIUS)).toBeNull();
+  });
+
+  it("handleAt returns exactly nearestHandle's id (thin-delegate semantics unchanged)", () => {
+    expect(handleAt(handles, { x: 103, y: 97 }, HIT_RADIUS)).toBe(nearestHandle(handles, { x: 103, y: 97 }, HIT_RADIUS)?.id ?? null);
+    expect(handleAt(handles, { x: 200, y: 175 }, HIT_RADIUS)).toBeNull();
   });
 });
 
@@ -388,5 +431,207 @@ describe("applyResize: highlight", () => {
     const b = boundsOf(h, measure);
     const result = applyResize(h, b, "se" as never, { x: 500, y: 500 }, false);
     expect(result).toBe(h);
+  });
+});
+
+// TASK-41: angle survives applyResize (spread-through — every per-kind
+// transform builds its result via `{ ...a, ... }`), for both an unchanged
+// and a resize-touched field.
+describe("applyResize: angle survives", () => {
+  it("rect", () => {
+    const r = { ...rect({ x: 0, y: 0 }, { x: 100, y: 100 }), angle: 0.3 };
+    const b = boundsOf(r, measure);
+    const result = applyResize(r, b, "se", { x: 150, y: 80 }, false) as RectAnnotation & { angle?: number };
+    expect(result.angle).toBe(0.3);
+  });
+
+  it("badge", () => {
+    const bd = { ...badge({ x: 50, y: 50 }, 20), angle: -0.5 };
+    const b = boundsOf(bd, measure);
+    const result = applyResize(bd, b, "se", { x: 90, y: 66 }, false) as BadgeAnnotation & { angle?: number };
+    expect(result.angle).toBe(-0.5);
+  });
+});
+
+// TASK-41 round 2: three placements ("north"/"south"/"clamped"), each tested
+// against an INSET rect (canvasSize shrunk by `margin` on every side) rather
+// than the old flip-to-south-else-north-wins rule.
+describe("rotateHandleFor", () => {
+  const canvasSize = { w: 200, h: 200 };
+  const margin = 5;
+
+  it("north placement at angle 0: local === world, offset outside the north edge", () => {
+    const b: Bounds = { x: 0, y: 100, w: 100, h: 50 }; // far enough from the top edge that north stays in-inset
+    const result = rotateHandleFor(b, 0, 24, canvasSize, margin);
+    expect(result).toEqual({ local: { x: 50, y: 76 }, world: { x: 50, y: 76 }, placement: "north" });
+  });
+
+  it("rotates the local knob position into world space (still north placement)", () => {
+    const b: Bounds = { x: 75, y: 75, w: 50, h: 50 }; // pivot (100,100)
+    const result = rotateHandleFor(b, Math.PI / 2, 10, canvasSize, margin);
+    expect(result.local).toEqual({ x: 100, y: 65 });
+    expect(result.world.x).toBeCloseTo(135, 9);
+    expect(result.world.y).toBeCloseTo(100, 9);
+    expect(result.placement).toBe("north");
+  });
+
+  it("south placement when the north-side world position falls outside the inset rect", () => {
+    const b: Bounds = { x: 0, y: 10, w: 100, h: 50 }; // north world y = 10-24 = -14, outside [margin, h-margin]
+    const result = rotateHandleFor(b, 0, 24, canvasSize, margin);
+    expect(result.placement).toBe("south");
+    expect(result.local).toEqual({ x: 50, y: 84 }); // south: y0+h+offset = 10+50+24
+    expect(result.world).toEqual({ x: 50, y: 84 });
+  });
+
+  it("clamped placement (angle 0) when both sides fall outside the inset rect", () => {
+    const tinyCanvas = { w: 200, h: 60 }; // inset y range [5, 55]
+    const b: Bounds = { x: 0, y: 10, w: 100, h: 50 }; // north y=-14, south y=84 — both outside [5,55]
+    const result = rotateHandleFor(b, 0, 24, tinyCanvas, margin);
+    expect(result.placement).toBe("clamped");
+    // Component-wise clamp of the NORTH world position (50, -14) into [5,195]x[5,55].
+    expect(result.world).toEqual({ x: 50, y: 5 });
+    // angle 0: unrotate is the identity, so local === world here.
+    expect(result.local).toEqual({ x: 50, y: 5 });
+  });
+
+  it("clamped placement (rotated): local recomputed via unrotate still rotates forward to the clamped world position", () => {
+    const tinyCanvas = { w: 200, h: 60 }; // inset y range [5, 55]
+    const b: Bounds = { x: 75, y: 75, w: 50, h: 50 }; // pivot (100,100)
+    const angle = Math.PI / 2;
+    const result = rotateHandleFor(b, angle, 10, tinyCanvas, margin);
+    expect(result.placement).toBe("clamped");
+    // north world (135,100) and south world (65,100) both have y=100, outside
+    // [5,55]; clamped world is the NORTH one with y pulled to the inset edge.
+    expect(result.world.x).toBeCloseTo(135, 9);
+    expect(result.world.y).toBeCloseTo(55, 9);
+    // Round-trip: rotating `local` forward by `angle` about the shape's pivot
+    // must land exactly back on `world` — this is what makes it safe for the
+    // connector line (drawn in local coordinates) to use `local` directly.
+    const roundTrip = rotatePoint(result.local, pivotOf(b), angle);
+    expect(roundTrip.x).toBeCloseTo(result.world.x, 9);
+    expect(roundTrip.y).toBeCloseTo(result.world.y, 9);
+  });
+
+  // TASK-41 round 5: canvas.ts's knobMargin() derives its margin from
+  // ROTATE_GLYPH_OUTER_RATIO (0.80 as of round 5, up from round 4's 0.71 —
+  // the arrowhead's true max extent was underestimated), evaluating to
+  // 16 * 0.80 + 2 = 14.8 CSS px at the production ROTATE_HANDLE_DRAW_PX (16).
+  // `knobMargin()` itself is a private Editor method and untestable from
+  // here, so this pins the *boundary value* directly against `rotateHandleFor`:
+  // a shape whose north position sits between the old and new margins must
+  // flip placement exactly at the new constant's threshold.
+  it("pins the round-5 production margin (14.8 CSS px @ D=16): a north position that fit under the old margin no longer fits under the new one", () => {
+    const canvasSizeLocal = { w: 200, h: 200 };
+    const b: Bounds = { x: 0, y: 38, w: 100, h: 50 }; // north world y = 38 - 24 = 14
+    const NEW_MARGIN = 14.8; // 16 * ROTATE_GLYPH_OUTER_RATIO(0.80) + 2
+    const OLD_MARGIN = 13.36; // 16 * round-4's ROTATE_GLYPH_OUTER_RATIO(0.71) + 2
+
+    const atNewMargin = rotateHandleFor(b, 0, 24, canvasSizeLocal, NEW_MARGIN);
+    expect(atNewMargin.placement).toBe("south"); // 14 < 14.8: north no longer fits
+
+    const atOldMargin = rotateHandleFor(b, 0, 24, canvasSizeLocal, OLD_MARGIN);
+    expect(atOldMargin.placement).toBe("north"); // 14 >= 13.36: north used to fit here
+  });
+});
+
+describe("anchorPointFor", () => {
+  it("rect: opposite corner for each of the 4 corner handles", () => {
+    const r = rect({ x: 0, y: 0 }, { x: 100, y: 50 });
+    const b = boundsOf(r, measure);
+    expect(anchorPointFor(r, b, "se")).toEqual({ x: 0, y: 0 });
+    expect(anchorPointFor(r, b, "nw")).toEqual({ x: 100, y: 50 });
+    expect(anchorPointFor(r, b, "ne")).toEqual({ x: 0, y: 50 });
+    expect(anchorPointFor(r, b, "sw")).toEqual({ x: 100, y: 0 });
+  });
+
+  it("rect: the two fixed corners for an edge handle both stay put — anchorPointFor picks the nw-ward one", () => {
+    const r = rect({ x: 0, y: 0 }, { x: 100, y: 50 });
+    const b = boundsOf(r, measure);
+    expect(anchorPointFor(r, b, "e")).toEqual({ x: 0, y: 0 });
+    expect(anchorPointFor(r, b, "n")).toEqual({ x: 0, y: 50 });
+  });
+
+  it("image: same box formula as rect", () => {
+    const img = image({ x: 10, y: 10 }, 80, 40);
+    const b = boundsOf(img, measure);
+    expect(anchorPointFor(img, b, "sw")).toEqual({ x: 90, y: 10 });
+  });
+
+  it("text: same box formula, 4 corner handles only", () => {
+    const t = text({ x: 0, y: 0 }, "hi", 20);
+    const b = boundsOf(t, measure);
+    expect(anchorPointFor(t, b, "ne")).toEqual({ x: b.x, y: b.y + b.h });
+  });
+
+  it("badge: always the center, regardless of handle", () => {
+    const bd = badge({ x: 50, y: 50 }, 20);
+    const b = boundsOf(bd, measure);
+    expect(anchorPointFor(bd, b, "se")).toEqual({ x: 50, y: 50 });
+    expect(anchorPointFor(bd, b, "nw")).toEqual({ x: 50, y: 50 });
+  });
+
+  it("arrow: the endpoint NOT being dragged", () => {
+    const a = arrow({ x: 30, y: 40 }, { x: 5, y: 2 });
+    const b = boundsOf(a, measure);
+    expect(anchorPointFor(a, b, "to")).toEqual({ x: 30, y: 40 });
+    expect(anchorPointFor(a, b, "from")).toEqual({ x: 5, y: 2 });
+  });
+
+  it("highlight: the center of its bounding box", () => {
+    const h = highlight([{ x: 0, y: 0 }, { x: 10, y: 40 }]);
+    const b = boundsOf(h, measure);
+    expect(anchorPointFor(h, b, "se" as never)).toEqual(pivotOf(b));
+  });
+});
+
+/**
+ * TASK-41 resize/rotation composition contract (design doc "Geometry
+ * contract"): resizing operates in the shape's unrotated local frame
+ * (pointer inverse-rotated about the PRE-DRAG pivot), reuses `applyResize`
+ * verbatim, then a re-anchor translation keeps the handle's pinned point
+ * world-fixed. This is the provably-drift-free composition `canvas.ts` wires
+ * up for real pointer drags; here it's exercised directly against
+ * resize.ts/rotate.ts, with no DOM involved.
+ */
+describe("resize composed with rotation (drift-free by construction)", () => {
+  it("45°-rotated rect: the pinned (nw) world corner is unchanged after resizing from se and re-anchoring", () => {
+    const original = { ...rect({ x: 0, y: 0 }, { x: 100, y: 100 }), angle: Math.PI / 4 };
+    const boundsPredrag = boundsOf(original, measure);
+    const pivot0 = pivotOf(boundsPredrag);
+    const handle = "se" as const;
+    const anchorLocal = anchorPointFor(original, boundsPredrag, handle); // nw corner, (0,0)
+    const worldAnchorBefore = rotatePoint(anchorLocal, pivot0, original.angle);
+
+    // Pick an arbitrary world-space pointer position and drive the gesture
+    // through the same steps canvas.ts's onMove resize branch performs.
+    const worldPointer = { x: 220, y: 60 };
+    const localPointer = unrotatePoint(worldPointer, pivot0, original.angle);
+    const resized = applyResize(original, boundsPredrag, handle, localPointer, false) as RectAnnotation & {
+      angle?: number;
+    };
+    const boundsAfter = boundsOf(resized, measure);
+    const d = reanchorDelta(anchorLocal, boundsPredrag, boundsAfter, original.angle);
+    // translateAnnotation, not a hand-rolled translation — exercises the
+    // exact call canvas.ts's onMove resize branch makes.
+    const final = translateAnnotation(resized, d.x, d.y) as RectAnnotation & { angle?: number };
+
+    const boundsFinal = boundsOf(final, measure);
+    const pivotFinal = pivotOf(boundsFinal);
+    const worldAnchorAfter = rotatePoint({ x: boundsFinal.x, y: boundsFinal.y }, pivotFinal, final.angle!);
+
+    expect(worldAnchorAfter.x).toBeCloseTo(worldAnchorBefore.x, 9);
+    expect(worldAnchorAfter.y).toBeCloseTo(worldAnchorBefore.y, 9);
+    // Angle itself is untouched by the resize+re-anchor composition.
+    expect(final.angle).toBeCloseTo(Math.PI / 4);
+  });
+
+  it("is an exact no-op at angle 0 (reanchorDelta is always {0,0})", () => {
+    const original = rect({ x: 0, y: 0 }, { x: 100, y: 100 });
+    const b = boundsOf(original, measure);
+    const anchorLocal = anchorPointFor(original, b, "se");
+    const resized = applyResize(original, b, "se", { x: 150, y: 80 }, false);
+    const bAfter = boundsOf(resized, measure);
+    const d = reanchorDelta(anchorLocal, b, bAfter, 0);
+    expect(d).toEqual({ x: 0, y: 0 });
   });
 });

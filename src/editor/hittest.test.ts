@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { boundsOf, hitTest } from "./hittest";
-import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, Annotation } from "./model";
+import { hitTest } from "./hittest";
+import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation, Annotation } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
+import { pivotOfAnnotation, rotatePoint } from "./rotate";
 
 // Trivial fake 2D context: only `font` (settable) and `measureText` are used
 // by hittest.ts, so this is all boundsOf's text branch needs.
@@ -30,40 +31,9 @@ function badge(at: { x: number; y: number }, radius = 20): BadgeAnnotation {
   return { id: "badge1", kind: "badge", color: "#ED107B", strokeWidth: 6, at, number: 1, radius };
 }
 
-describe("boundsOf", () => {
-  it("arrow: normalized bounds regardless of corner order", () => {
-    const a1 = arrow({ x: 10, y: 20 }, { x: 30, y: 5 });
-    const a2 = arrow({ x: 30, y: 5 }, { x: 10, y: 20 });
-    expect(boundsOf(a1, measure)).toEqual({ x: 10, y: 5, w: 20, h: 15 });
-    expect(boundsOf(a2, measure)).toEqual(boundsOf(a1, measure));
-  });
-
-  it("rect: normalized bounds regardless of corner order", () => {
-    const r1 = rect({ x: 0, y: 0 }, { x: 40, y: 25 });
-    const r2 = rect({ x: 40, y: 25 }, { x: 0, y: 0 });
-    expect(boundsOf(r1, measure)).toEqual({ x: 0, y: 0, w: 40, h: 25 });
-    expect(boundsOf(r2, measure)).toEqual(boundsOf(r1, measure));
-  });
-
-  it("text: x/y === at, w === text.length*10, h === fontSize*1.2", () => {
-    const t = text({ x: 5, y: 7 }, "hello", 20);
-    const b = boundsOf(t, measure);
-    expect(b.x).toBe(5);
-    expect(b.y).toBe(7);
-    expect(b.w).toBe(50);
-    expect(b.h).toBe(24);
-  });
-
-  it("highlight: bounding box over all points", () => {
-    const h = highlight([{ x: 0, y: 0 }, { x: 10, y: 40 }, { x: 5, y: 5 }]);
-    expect(boundsOf(h, measure)).toEqual({ x: 0, y: 0, w: 10, h: 40 });
-  });
-
-  it("badge: bounding box centered on `at` with side 2*radius", () => {
-    const b = badge({ x: 50, y: 50 }, 20);
-    expect(boundsOf(b, measure)).toEqual({ x: 30, y: 30, w: 40, h: 40 });
-  });
-});
+function image(at: { x: number; y: number }, width: number, height: number): ImageAnnotation {
+  return { id: "image1", kind: "image", color: "#000000", strokeWidth: 1, at, width, height };
+}
 
 describe("hitTest arrow", () => {
   it("a point on the shaft within tolerance hits", () => {
@@ -167,6 +137,66 @@ describe("hitTest badge", () => {
     const b = badge({ x: 50, y: 50 }, 20);
     const result = hitTest([b], { x: 500, y: 500 }, measure, 5);
     expect(result).toBeNull();
+  });
+});
+
+// TASK-41: hitsAnnotation inverse-rotates the pointer about the pivot before
+// the unchanged per-kind test above, for every kind (not just the ones with
+// a rotate-handle affordance — see rotate.ts's canRotate). Constructed via
+// rotatePoint so these tests don't depend on the exact per-kind bounds math,
+// only on the round-trip: a local-frame point that hits at angle 0 must hit
+// at its rotated world position for any angle, and the pre-rotation world
+// position must miss once the shape has actually rotated away from it.
+describe("hitTest with rotation", () => {
+  it("rect: a local-frame perimeter point still hits at its rotated world position", () => {
+    const r = rect({ x: 0, y: 0 }, { x: 100, y: 50 }, 4);
+    const angle = Math.PI / 2;
+    const pivot = pivotOfAnnotation(r, measure);
+    const localHitPoint = { x: 50, y: 0 }; // top-edge midpoint, on the unrotated perimeter
+    const worldPoint = rotatePoint(localHitPoint, pivot, angle);
+    const rotated: RectAnnotation = { ...r, angle };
+    expect(hitTest([rotated], worldPoint, measure, 5)).toBe(rotated);
+  });
+
+  it("rect: the pre-rotation world position no longer hits once rotated", () => {
+    const r = rect({ x: 0, y: 0 }, { x: 100, y: 50 }, 4);
+    const localHitPoint = { x: 50, y: 0 };
+    const rotated: RectAnnotation = { ...r, angle: Math.PI / 2 };
+    expect(hitTest([rotated], localHitPoint, measure, 5)).toBeNull();
+  });
+
+  it("text: a local-frame bbox point still hits at its rotated world position", () => {
+    const t = text({ x: 0, y: 0 }, "hello", 20); // bounds w=50,h=24
+    const angle = Math.PI / 3;
+    const pivot = pivotOfAnnotation(t, measure);
+    const localHitPoint = { x: 10, y: 10 };
+    const worldPoint = rotatePoint(localHitPoint, pivot, angle);
+    const rotated: TextAnnotation = { ...t, angle };
+    expect(hitTest([rotated], worldPoint, measure, 5)).toBe(rotated);
+  });
+
+  it("image: a local-frame bbox point still hits at its rotated world position", () => {
+    const img = image({ x: 10, y: 10 }, 80, 40);
+    const angle = -0.9;
+    const pivot = pivotOfAnnotation(img, measure);
+    const localHitPoint = { x: 20, y: 20 };
+    const worldPoint = rotatePoint(localHitPoint, pivot, angle);
+    const rotated: ImageAnnotation = { ...img, angle };
+    expect(hitTest([rotated], worldPoint, measure, 5)).toBe(rotated);
+  });
+
+  it("badge: rotation around its own center leaves the circular hit region unchanged", () => {
+    const b = badge({ x: 50, y: 50 }, 20);
+    const rotated: BadgeAnnotation = { ...b, angle: Math.PI / 4 };
+    expect(hitTest([rotated], { x: 50, y: 50 }, measure, 5)).toBe(rotated);
+    expect(hitTest([rotated], { x: 50 + 24.9, y: 50 }, measure, 5)).toBe(rotated);
+  });
+
+  it("angle: 0 explicit behaves identically to angle absent", () => {
+    const r1 = rect({ x: 0, y: 0 }, { x: 100, y: 100 }, 4);
+    const r2: RectAnnotation = { ...r1, angle: 0 };
+    expect(hitTest([r1], { x: 0, y: 50 }, measure, 5)).toBe(r1);
+    expect(hitTest([r2], { x: 0, y: 50 }, measure, 5)).toBe(r2);
   });
 });
 

@@ -1,58 +1,16 @@
 /**
- * Pure geometry: bounds and hit-testing over the annotation object model.
- * Format-agnostic (a future `.soegaki` loader or SVG exporter can reuse this),
- * and deliberately NOT imported by exporter.ts — that import boundary is the
- * mechanical guarantee that selection chrome cannot leak into rasterized output.
+ * Pure geometry: hit-testing over the annotation object model. Format-agnostic
+ * (a future `.soegaki` loader or SVG exporter can reuse this), and
+ * deliberately NOT imported by exporter.ts — that import boundary is the
+ * mechanical guarantee that selection chrome cannot leak into rasterized
+ * output. `Bounds`/`boundsOf` live in the leaf module `bounds.ts` (moved out
+ * so `render.ts` can also reach them without a `hittest.ts` import cycle) —
+ * import them from there directly, not through this module.
  */
 import type { Annotation, Point } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
-import { badgeHalfWidth, fontString } from "./render";
-
-export interface Bounds {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Bounds {
-  switch (a.kind) {
-    case "arrow": {
-      const x = Math.min(a.from.x, a.to.x);
-      const y = Math.min(a.from.y, a.to.y);
-      return { x, y, w: Math.abs(a.from.x - a.to.x), h: Math.abs(a.from.y - a.to.y) };
-    }
-    case "rect": {
-      const x = Math.min(a.a.x, a.b.x);
-      const y = Math.min(a.a.y, a.b.y);
-      return { x, y, w: Math.abs(a.a.x - a.b.x), h: Math.abs(a.a.y - a.b.y) };
-    }
-    case "text": {
-      measure.font = fontString(a.fontSize);
-      const w = measure.measureText(a.text).width;
-      const h = a.fontSize * 1.2;
-      return { x: a.at.x, y: a.at.y, w, h };
-    }
-    case "highlight": {
-      const xs = a.points.map((p) => p.x);
-      const ys = a.points.map((p) => p.y);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-    }
-    case "badge": {
-      // Auto badges: hw === a.radius, so this is exactly the old circle
-      // bbox. Manual badges widen to fit their number (see badgeHalfWidth's
-      // doc comment) — same widened box drawBadge renders.
-      const hw = badgeHalfWidth(a);
-      return { x: a.at.x - hw, y: a.at.y - a.radius, w: 2 * hw, h: 2 * a.radius };
-    }
-    case "image":
-      return { x: a.at.x, y: a.at.y, w: a.width, h: a.height };
-  }
-}
+import { type Bounds, boundsOf } from "./bounds";
+import { pivotOfAnnotation, unrotatePoint } from "./rotate";
 
 /** Topmost-first hit test: iterates the list from last (drawn on top) to first. */
 export function hitTest(
@@ -74,6 +32,11 @@ function hitsAnnotation(
   measure: CanvasRenderingContext2D,
   tolerance: number,
 ): boolean {
+  // Inverse-rotate the pointer into the shape's local (unrotated) frame
+  // before running the existing, unchanged per-kind test below. Rotation is
+  // an isometry, so every distance-based tolerance test stays valid.
+  const angle = a.angle ?? 0;
+  if (angle) p = unrotatePoint(p, pivotOfAnnotation(a, measure), angle);
   switch (a.kind) {
     case "arrow": {
       const dist = distanceToSegment(p, a.from, a.to);

@@ -19,17 +19,32 @@ import {
   renumberBadges,
   translateAnnotation,
 } from "./model";
-import { fontString, renderAnnotations } from "./render";
+import { renderAnnotations } from "./render";
 import { History, type DocSnapshot } from "./history";
-import { boundsOf, hitTest, type Bounds } from "./hittest";
+import { type Bounds, boundsOf, fontString } from "./bounds";
+import { hitTest } from "./hittest";
 import { decodeClampedBitmap } from "./downscale";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
 import {
   resizeHandlesFor,
-  handleAt as resizeHandleAt,
   applyResize,
+  rotateHandleFor,
+  anchorPointFor,
+  nearestHandle,
   type ResizeHandle,
 } from "./resize";
+import {
+  angleOf,
+  applyRotation,
+  canRotate,
+  pivotOf,
+  pivotOfAnnotation,
+  reanchorDelta,
+  rotatePoint,
+  rotatedCorners,
+  rotationFromDrag,
+  unrotatePoint,
+} from "./rotate";
 
 /** Selection hit-test tolerance in CSS px; scale-compensated to bitmap px at the call site. */
 const BASE_TOL_PX = 6;
@@ -54,6 +69,60 @@ const TOUCH_HIT_MULTIPLIER = 2;
 const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
 /** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
 const HIGHLIGHTER_MIN_POINT_DIST_PX = 2;
+/** Selection marquee padding around the raw `boundsOf` box, in bitmap px (TASK-29; not scale-compensated — a fixed pixel margin regardless of zoom). Also the box the rotate knob's `rotateHandleFor` is positioned from. */
+const SELECTION_PAD_PX = 6;
+/** Rotate knob offset outside the selection marquee's north edge (its natural, "north" placement — see resize.ts's rotateHandleFor for the south/clamped fallbacks), in CSS px; scale-compensated to bitmap px at the call site. */
+const ROTATE_HANDLE_OFFSET_PX = 24;
+/**
+ * The NOMINAL size (CSS px, scale-compensated at the call site) every rotate
+ * knob glyph ratio in `drawSelectionOverlay` keys off — not a literal "draw
+ * diameter" of anything on its own (round 4, user-chosen design "A3": a
+ * naked circular-arrow glyph with no enclosing disc, see there for the full
+ * geometry). The two `ROTATE_GLYPH_*_RATIO` constants below own the glyph's
+ * measured radii. Draw size and hit radius are independent:
+ * `handleHitRadius`/the knob's grab/tie-break math are unaffected by this
+ * constant.
+ */
+const ROTATE_HANDLE_DRAW_PX = 16;
+/**
+ * The knob glyph's two measured radii, as ratios of ROTATE_HANDLE_DRAW_PX *
+ * cropScale(). They have different jobs and are NOT interchangeable:
+ *
+ *   SEAM  = arc casing outer radius = arc 0.53 + casing/2 0.175 = 0.705
+ *           -> where the connector line stops, so the seam stays flush with
+ *              the arc's white casing.
+ *   OUTER = the glyph's true maximum extent from its centre, i.e. the largest
+ *           of the three candidates (recompute all three on ANY ratio change):
+ *             arc casing outer      0.53  + 0.175 = 0.705
+ *             arrowhead tip + casing hypot(0.53, 0.29) + 0.095 = 0.699
+ *             arrowhead base corner  0.53  + 0.17  + 0.095 = 0.795  <- max
+ *           Rounded up to 0.80 so knobMargin()'s "+2" is a real ~2 CSS px of
+ *           slack, not a rounding artefact.
+ *           -> feeds knobMargin() -> rotateHandleFor's "clamped" placement,
+ *              which keeps the whole glyph on-canvas. Drop shadow is
+ *              deliberately excluded (cosmetic; clipping it is invisible).
+ *
+ * Drawn size and grab size stay independent: handleHitRadius() is unaffected.
+ */
+const ROTATE_GLYPH_SEAM_RATIO = 0.705;
+const ROTATE_GLYPH_OUTER_RATIO = 0.80;
+
+/**
+ * Rotate cursor (round 3, real-app feedback): a custom `url()` data-SVG —
+ * deferred at TASK-41's first pass, adopted now that the plain grab/grabbing
+ * keywords alone didn't read as "rotate" either. Two overlaid arc+arrow
+ * strokes: a wider white one underneath and a narrower black one on top, so
+ * the glyph stays legible over both light and dark backgrounds (the same
+ * outline-pass trick `render.ts`'s arrow/rect/text drawing already uses).
+ * `#` must stay percent-encoded as `%23` — WebView2 (the desktop app's
+ * webview) truncates the data URI at a literal `#`, treating it as a
+ * fragment separator. The `, grab` / `, grabbing` keyword fallback covers
+ * browsers that reject the custom cursor image for any reason.
+ */
+const ROTATE_CURSOR_SVG =
+  'url("data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%2724%27%20height=%2724%27%20viewBox=%270%200%2024%2024%27%3E%3Cg%20fill=%27none%27%20stroke-linecap=%27round%27%20stroke-linejoin=%27round%27%3E%3Cpath%20d=%27M18%2012a6%206%200%201%201-2.2-4.6%27%20stroke=%27%23fff%27%20stroke-width=%274%27/%3E%3Cpath%20d=%27M15.8%203.2v4.4h-4.4%27%20stroke=%27%23fff%27%20stroke-width=%274%27/%3E%3Cpath%20d=%27M18%2012a6%206%200%201%201-2.2-4.6%27%20stroke=%27%23000%27%20stroke-width=%272%27/%3E%3Cpath%20d=%27M15.8%203.2v4.4h-4.4%27%20stroke=%27%23000%27%20stroke-width=%272%27/%3E%3C/g%3E%3C/svg%3E") 12 12';
+const ROTATE_CURSOR_HOVER = `${ROTATE_CURSOR_SVG}, grab`;
+const ROTATE_CURSOR_ACTIVE = `${ROTATE_CURSOR_SVG}, grabbing`;
 
 export class Editor {
   // doc.images is a monotonic session cache (see model.ts's Doc.images doc
@@ -101,6 +170,19 @@ export class Editor {
   // `boundsOf`, fixed for the whole gesture so each move frame recomputes the
   // resize from the same base (never incrementally, avoiding drift).
   private resize: { handle: ResizeHandle; original: Annotation; bounds: Bounds; changed: boolean } | null = null;
+  // Armed while the select tool's rotate-knob is being dragged; mirrors
+  // `move`/`resize` — `original` is the pre-drag clone, `pivot` is the
+  // PRE-DRAG pivot (fixed for the whole gesture, same anti-drift rationale),
+  // and `startAngle`/`startPointer` make the drag relative (grabbing the
+  // knob never snaps the shape to the pointer — see rotate.ts's
+  // `rotationFromDrag`).
+  private rotateDrag: {
+    original: Annotation;
+    pivot: Point;
+    startAngle: number;
+    startPointer: Point;
+    changed: boolean;
+  } | null = null;
   // Crop tool state: the current region (starts as the full image), the
   // corner handle actively being dragged (if any), and the owned floating
   // ✓/✗ controls overlay + its resize-reposition handler. Never part of doc,
@@ -123,6 +205,15 @@ export class Editor {
     color: string;
     fontSize: number;
     editId: string | null;
+    // Rotation (TASK-41): the pre-edit annotation's angle/pivot, both fixed
+    // for the whole edit session (a re-edit never itself changes the angle —
+    // only resize/rotate gestures do, and those are impossible while the
+    // text editor owns the gesture state). Always 0/{0,0} for a brand-new
+    // text (never rotated). See `positionTextEditor` for how these place the
+    // CSS-rotated `<input>` at the exact world position `render.ts`'s canvas
+    // transform would draw the same local `at` at.
+    angle: number;
+    pivot: Point;
     reposition: () => void;
     /** Removes the visualViewport listeners set up for this edit session, if any (TASK-35.10); safe to call unconditionally. */
     clearViewportGuard: () => void;
@@ -270,6 +361,7 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.resize = null;
+    this.rotateDrag = null;
     this.teardownCrop();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
@@ -313,6 +405,7 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.resize = null;
+    this.rotateDrag = null;
     this.teardownCrop();
     if (snapshot.imageBitmap) {
       this.canvas.width = snapshot.imageBitmap.width;
@@ -388,6 +481,7 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.resize = null;
+    this.rotateDrag = null;
     this.render();
   }
 
@@ -438,6 +532,7 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.resize = null;
+    this.rotateDrag = null;
     // history and doc.images deliberately preserved: the pushed snapshot references them.
     this.recomputeDocScale();
     this.fitCanvasToStage();
@@ -556,6 +651,7 @@ export class Editor {
     this.selectedId = null;
     this.move = null;
     this.resize = null;
+    this.rotateDrag = null;
     // Exit crop mode to select on the newly-cropped image (setTool renders).
     // Guarded: switching tools during the await already tore crop down (and,
     // if the crop tool was re-armed for a *different* image meanwhile, that
@@ -570,31 +666,136 @@ export class Editor {
       : this.doc.annotations.find((a) => a.id === this.selectedId);
   }
 
+  /** The selection marquee's padded box (`SELECTION_PAD_PX` outside the raw `boundsOf`) — the one box both `drawSelectionOverlay`'s draw and `onDown`/`onMove`'s rotate-knob hit-test are positioned from, so drawn position and hit region never drift apart (same discipline as the resize handles below). */
+  private paddedBoundsOf(b: Bounds): Bounds {
+    return { x: b.x - SELECTION_PAD_PX, y: b.y - SELECTION_PAD_PX, w: b.w + SELECTION_PAD_PX * 2, h: b.h + SELECTION_PAD_PX * 2 };
+  }
+
+  /** `rotateHandleFor`'s `margin`, in bitmap px: keeps the knob glyph's own visual radius (`ROTATE_GLYPH_OUTER_RATIO`, not just its center point) clear of the canvas edge, plus a couple px of breathing room. The drop shadow is deliberately excluded. */
+  private knobMargin(): number {
+    return (ROTATE_HANDLE_DRAW_PX * ROTATE_GLYPH_OUTER_RATIO + 2) * this.cropScale();
+  }
+
+  /** The padded box's own edge-midpoint (N/E/S/W) nearest to `p` — the connector-line origin when the knob has been clamped away from the north/south edge (`rotateHandleFor`'s `"clamped"` placement). */
+  private nearestPaddedEdgeMidpoint(b: Bounds, p: Point): Point {
+    const candidates: Point[] = [
+      { x: b.x + b.w / 2, y: b.y },
+      { x: b.x + b.w, y: b.y + b.h / 2 },
+      { x: b.x + b.w / 2, y: b.y + b.h },
+      { x: b.x, y: b.y + b.h / 2 },
+    ];
+    let best = candidates[0];
+    let bestDist = Infinity;
+    for (const c of candidates) {
+      const d = Math.hypot(c.x - p.x, c.y - p.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Whether the pointer at `p` (world coordinates) hits the rotate knob or a
+   * resize handle for `selected` — **nearest-wins, knob as tie-break**
+   * (TASK-41 round 2 review fix; the original design gave the knob absolute
+   * priority, which stole clicks meant for a resize handle that happened to
+   * be nearer). Both `onDown`'s arm logic and `onMove`'s hover-cursor logic
+   * call this so they can never disagree about which control a given pointer
+   * position lands on. Resize handles are hit-tested in the shape's local
+   * (unrotated) frame — the pointer is inverse-rotated about the pivot first,
+   * an exact no-op at angle 0 — while the knob's `world` position is
+   * compared directly, since `rotateHandleFor` already returns it in world
+   * space. `r` (from `handleHitRadius(pointerType)`) is used for BOTH checks;
+   * the knob's draw offset itself is never touch-enlarged.
+   */
+  private rotateOrResizeTarget(
+    selected: Annotation,
+    pointerType: string,
+    p: Point,
+  ):
+    | { kind: "rotate"; bounds: Bounds; angle: number }
+    | { kind: "resize"; handle: ResizeHandle; bounds: Bounds }
+    | null {
+    const bounds = boundsOf(selected, this.ctx);
+    const angle = angleOf(selected);
+    const r = this.handleHitRadius(pointerType);
+    const localP = angle ? unrotatePoint(p, pivotOf(bounds), angle) : p;
+    const nearest = nearestHandle(resizeHandlesFor(selected, bounds), localP, r);
+
+    let knobDist: number | null = null;
+    if (canRotate(selected.kind)) {
+      const knob = rotateHandleFor(
+        this.paddedBoundsOf(bounds),
+        angle,
+        ROTATE_HANDLE_OFFSET_PX * this.cropScale(),
+        { w: this.canvas.width, h: this.canvas.height },
+        this.knobMargin(),
+      );
+      knobDist = Math.hypot(p.x - knob.world.x, p.y - knob.world.y);
+    }
+
+    if (knobDist !== null && knobDist <= r && (nearest === null || knobDist <= nearest.dist)) {
+      return { kind: "rotate", bounds, angle };
+    }
+    if (nearest !== null) {
+      return { kind: "resize", handle: nearest.id, bounds };
+    }
+    return null;
+  }
+
   /**
    * Dashed marquee around the selected annotation's bounds, plus its resize
-   * handles (TASK-29). Not exported (see render()). Handles are square
-   * grabbers at screen-constant size (same styling/scale compensation as the
-   * crop tool's corner handles), positioned from the same unpadded `boundsOf`
-   * used for resize hit-testing in onDown/onMove/hover, so drawn position and
-   * hit region always agree. `resizeHandlesFor` returns `[]` for highlight
-   * annotations, so they draw no handles here.
+   * handles (TASK-29) and, for rotatable kinds (TASK-41), a rotate knob. Not
+   * exported (see render()). Handles are square grabbers at screen-constant
+   * size (same styling/scale compensation as the crop tool's corner
+   * handles), positioned from the same unpadded `boundsOf` used for resize
+   * hit-testing in onDown/onMove/hover, so drawn position and hit region
+   * always agree. `resizeHandlesFor` returns `[]` for highlight annotations,
+   * so they draw no handles here.
+   *
+   * Everything — marquee, resize handles, rotate knob — is drawn inside a
+   * `save/translate(pivot)/rotate/translate(-pivot)/restore` transform when
+   * the annotation is rotated (an exact no-op at angle 0, byte-identical to
+   * the pre-TASK-41 code path), so their body coordinates stay expressed in
+   * the shape's own local frame — the same "one property, one owner" pattern
+   * `render.ts`'s draw loop uses. `positionSelectionControls` (the floating
+   * delete button) is deliberately called OUTSIDE the transform, after
+   * `restore()` — it's a DOM element, not a canvas draw call, and anchors to
+   * the *rotated* NE corner itself (`rotatedCorners`) rather than living
+   * inside the canvas transform.
    */
   private drawSelectionOverlay(a: Annotation): void {
     const { ctx } = this;
     const b = boundsOf(a, ctx);
-    const pad = 6;
-    const x = b.x - pad;
-    const y = b.y - pad;
-    const w = b.w + pad * 2;
-    const h = b.h + pad * 2;
+    const angle = angleOf(a);
+    const padded = this.paddedBoundsOf(b);
+    const knob = canRotate(a.kind)
+      ? rotateHandleFor(
+          padded,
+          angle,
+          ROTATE_HANDLE_OFFSET_PX * this.cropScale(),
+          { w: this.canvas.width, h: this.canvas.height },
+          this.knobMargin(),
+        )
+      : null;
+
+    ctx.save();
+    if (angle) {
+      const pivot = pivotOf(b);
+      ctx.translate(pivot.x, pivot.y);
+      ctx.rotate(angle);
+      ctx.translate(-pivot.x, -pivot.y);
+    }
 
     ctx.setLineDash([6, 4]);
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(255,255,255,0.9)";
-    ctx.strokeRect(x, y, w, h);
+    ctx.strokeRect(padded.x, padded.y, padded.w, padded.h);
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = PALETTE[0];
-    ctx.strokeRect(x, y, w, h);
+    ctx.strokeRect(padded.x, padded.y, padded.w, padded.h);
     ctx.setLineDash([]);
 
     const side = HANDLE_DRAW_PX * this.cropScale();
@@ -607,7 +808,132 @@ export class Editor {
       ctx.strokeRect(handle.pos.x - half, handle.pos.y - half, side, side);
     }
 
-    this.positionSelectionControls({ x, y, w, h });
+    if (knob) {
+      // Connector origin follows the placement edge for "north"/"south"; for
+      // "clamped" (large/heavily-rotated shape, knob pulled off both edges),
+      // it runs from whichever padded-edge midpoint is nearest the actual
+      // (clamped) knob position — simplest option that stays inside this one
+      // rotated transform, no second canvas pass needed.
+      let connectorFrom: Point;
+      if (knob.placement === "north") {
+        connectorFrom = { x: padded.x + padded.w / 2, y: padded.y };
+      } else if (knob.placement === "south") {
+        connectorFrom = { x: padded.x + padded.w / 2, y: padded.y + padded.h };
+      } else {
+        connectorFrom = this.nearestPaddedEdgeMidpoint(padded, knob.local);
+      }
+
+      // Naked circular-arrow glyph (round 4, user-chosen design "A3": no
+      // enclosing disc — a 260° arc, a filled arrowhead, and a centre pivot
+      // dot, PALETTE[0] over a white casing stroke with a soft drop shadow).
+      // The knob's geometry is defined relative to the arc, not to any
+      // enclosing disc. ROTATE_GLYPH_SEAM_RATIO/ROTATE_GLYPH_OUTER_RATIO
+      // (declared above, see their doc comment for the two radii's separate
+      // jobs) own the glyph's measured size; OUTER is what knobMargin() ->
+      // rotateHandleFor's "clamped" placement uses to keep the whole glyph
+      // on-canvas. Any change to the ratios below must be re-checked against
+      // both.
+      // Drawn size and grab size are independent: handleHitRadius() is
+      // unaffected. The glyph deliberately does NOT counter-rotate — it
+      // stays inside this same rotated overlay transform, so its tilt reads
+      // as the current angle (one source of truth, no separate unrotated
+      // draw pass). The whole knob — connector included — is drawn inside
+      // one save()/restore() so shadow/lineCap/lineJoin/lineWidth/dash never
+      // leak into the marquee or the square resize handles above.
+      ctx.save();
+      const c = knob.local;
+      const D = ROTATE_HANDLE_DRAW_PX * this.cropScale();
+      const glyphSeamRadius = ROTATE_GLYPH_SEAM_RATIO * D;
+
+      // 1. Connector — ends at the glyph's seam (the arc casing's outer
+      // edge), not its center, so it stays visually flush with the casing.
+      const toGlyph = { x: c.x - connectorFrom.x, y: c.y - connectorFrom.y };
+      const toGlyphLen = Math.hypot(toGlyph.x, toGlyph.y);
+      const toGlyphUnit = toGlyphLen > 0 ? { x: toGlyph.x / toGlyphLen, y: toGlyph.y / toGlyphLen } : { x: 0, y: -1 };
+      const connectorEnd = {
+        x: c.x - glyphSeamRadius * toGlyphUnit.x,
+        y: c.y - glyphSeamRadius * toGlyphUnit.y,
+      };
+      ctx.beginPath();
+      ctx.moveTo(connectorFrom.x, connectorFrom.y);
+      ctx.lineTo(connectorEnd.x, connectorEnd.y);
+      ctx.strokeStyle = PALETTE[0];
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Arc + arrowhead geometry, every dimension a ratio of D.
+      const rg = 0.53 * D;
+      const startAngle = (-65 * Math.PI) / 180;
+      const endAngle = (195 * Math.PI) / 180; // 260° clockwise sweep
+      const u = { x: Math.cos(endAngle), y: Math.sin(endAngle) }; // radial dir at the arc's end
+      const t = { x: -Math.sin(endAngle), y: Math.cos(endAngle) }; // tangent dir at the arc's end
+      const E = { x: c.x + rg * u.x, y: c.y + rg * u.y }; // point on the arc at endAngle
+      const tip = { x: E.x + 0.29 * D * t.x, y: E.y + 0.29 * D * t.y };
+      const b1 = { x: E.x + 0.17 * D * u.x, y: E.y + 0.17 * D * u.y };
+      const b2 = { x: E.x - 0.17 * D * u.x, y: E.y - 0.17 * D * u.y };
+
+      const traceArc = () => {
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, rg, startAngle, endAngle, false);
+      };
+      const traceHead = () => {
+        ctx.beginPath();
+        ctx.moveTo(tip.x, tip.y);
+        ctx.lineTo(b1.x, b1.y);
+        ctx.lineTo(b2.x, b2.y);
+        ctx.closePath();
+      };
+
+      // 2. Shadow on — one shadow pass covers both the arc's casing stroke
+      // and the arrowhead's casing stroke.
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0.075 * D;
+      ctx.shadowBlur = 0.19 * D;
+
+      ctx.lineCap = "round";
+      traceArc();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 0.35 * D;
+      ctx.stroke();
+
+      ctx.lineJoin = "round";
+      traceHead();
+      ctx.strokeStyle = "#FFFFFF";
+      ctx.lineWidth = 0.19 * D;
+      ctx.stroke();
+
+      // 3. Shadow off before the PALETTE[0] passes.
+      ctx.shadowColor = "transparent";
+
+      // 4. Main arc stroke.
+      traceArc();
+      ctx.strokeStyle = PALETTE[0];
+      ctx.lineWidth = 0.17 * D;
+      ctx.lineCap = "round";
+      ctx.stroke();
+
+      // 5. Arrowhead fill (no stroke — the casing pass above is its outline).
+      traceHead();
+      ctx.fillStyle = PALETTE[0];
+      ctx.fill();
+
+      // 6. Centre pivot dot: fill then white stroke.
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 0.2 * D, 0, 2 * Math.PI);
+      ctx.fillStyle = PALETTE[0];
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 0.09 * D;
+      ctx.stroke();
+
+      // 7. restore()
+      ctx.restore();
+    }
+
+    ctx.restore();
+
+    this.positionSelectionControls(padded, angle, knob ? knob.world : null);
   }
 
   /**
@@ -643,9 +969,18 @@ export class Editor {
    * Position the floating delete button just outside the selection
    * marquee's NE corner, using the same bitmap-px -> CSS-px mapping as
    * `positionCropControls`/`positionTextEditor`, clamped to stay fully
-   * inside the stage viewport.
+   * inside the stage viewport. `angle` rotates which world point counts as
+   * "NE": `rotatedCorners(paddedBounds, angle)[1]` — an exact identity at
+   * angle 0, so this is byte-identical to the pre-TASK-41 corner formula
+   * there. The existing viewport-clamp fallback (below) needs no rotation-
+   * specific extra case: the knob (N-edge midpoint) and this button (NE
+   * corner) stay separated by `paddedBounds.w / 2` independently of angle,
+   * since both are rigidly carried by the same rotation — EXCEPT when the
+   * knob itself has been clamped/flipped close to the NE corner (small or
+   * heavily-rotated shapes), which the `knobWorld` clearance check below
+   * covers as a second, independent trigger for the same fallback.
    */
-  private positionSelectionControls(paddedBounds: { x: number; y: number; w: number; h: number }): void {
+  private positionSelectionControls(paddedBounds: Bounds, angle: number, knobWorld: Point | null): void {
     const btn = this.ensureSelectionControls();
     const canvasRect = this.canvas.getBoundingClientRect();
     const stageRect = this.canvas.parentElement!.getBoundingClientRect();
@@ -653,25 +988,46 @@ export class Editor {
     const originX = canvasRect.left - stageRect.left;
     const originY = canvasRect.top - stageRect.top;
 
-    const neX = originX + (paddedBounds.x + paddedBounds.w) * scale;
-    const neY = originY + paddedBounds.y * scale;
+    const neLocal = rotatedCorners(paddedBounds, angle)[1];
+    const neX = originX + neLocal.x * scale;
+    const neY = originY + neLocal.y * scale;
 
     const bw = btn.offsetWidth || 30;
     const bh = btn.offsetHeight || 30;
 
     const idealLeft = neX + SELECTION_CONTROLS_MARGIN_PX;
     const idealTop = neY - SELECTION_CONTROLS_MARGIN_PX - bh;
+
+    // Knob clearance (TASK-41 round 2 review fix): distance from the knob's
+    // CSS-px center to the nearest point of the IDEAL (unclamped) button
+    // rect — computed here, before the viewport clamp below decides where
+    // the button actually lands, exactly like the top-edge check it feeds
+    // into. Uses the touch-worst-case radius unconditionally: layout must
+    // not depend on which pointer type happens to be active right now.
+    let knobTooClose = false;
+    if (knobWorld) {
+      const kx = originX + knobWorld.x * scale;
+      const ky = originY + knobWorld.y * scale;
+      const dx = Math.max(idealLeft - kx, 0, kx - (idealLeft + bw));
+      const dy = Math.max(idealTop - ky, 0, ky - (idealTop + bh));
+      const d = Math.hypot(dx, dy);
+      knobTooClose = d < HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER + SELECTION_CONTROLS_MARGIN_PX;
+    }
+
     let left = Math.min(Math.max(idealLeft, 0), stageRect.width - bw);
     let top = Math.min(Math.max(idealTop, 0), stageRect.height - bh);
 
-    if (top !== idealTop) {
-      // The default above-the-corner placement got pulled down by the
-      // viewport clamp (selection near the top stage edge, where there's
-      // no room above the corner): that clamped spot can land on top of the
-      // NE resize handle (TASK-29) and steal its pointer events. Drop the
-      // button below the NE corner instead, clear of the handle's CSS-px
-      // hit radius plus the usual margin — `left` is unaffected since a
-      // purely horizontal clamp never brings the button into the handle's
+    // The drop-below-the-corner fallback below has TWO independent triggers:
+    // (1) the top-edge viewport clamp (`top !== idealTop` — original
+    // TASK-35.11 case: selection near the stage's top edge, no room above
+    // the corner) and (2) the rotate knob (TASK-41) landing close enough to
+    // the ideal button rect to steal its pointer events. Keep BOTH checks —
+    // a future edit that "simplifies" this to just one would silently
+    // reintroduce whichever bug the dropped check was guarding against.
+    if (top !== idealTop || knobTooClose) {
+      // Drop the button below the NE corner instead, clear of the handle's
+      // CSS-px hit radius plus the usual margin — `left` is unaffected since
+      // a purely horizontal clamp never brings the button into the handle's
       // row (the unclamped placement always sits entirely above it).
       top = Math.min(Math.max(neY + HANDLE_HIT_PX + SELECTION_CONTROLS_MARGIN_PX, 0), stageRect.height - bh);
     }
@@ -845,12 +1201,6 @@ export class Editor {
     }
   }
 
-  /** Resize handles for the currently selected annotation, or [] if nothing is selected. */
-  private selectedHandles(): ReturnType<typeof resizeHandlesFor> {
-    const selected = this.selectedAnnotation();
-    return selected ? resizeHandlesFor(selected, boundsOf(selected, this.ctx)) : [];
-  }
-
   private onDown(p: Point, e: PointerEvent): void {
     if (!this.hasImage()) return;
     const tool = this.tool;
@@ -903,7 +1253,14 @@ export class Editor {
       const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
       if (hit && hit.kind === "text") {
         e.preventDefault();
-        this.openTextEditor(hit.at, { editId: hit.id, value: hit.text, color: hit.color, fontSize: hit.fontSize });
+        this.openTextEditor(hit.at, {
+          editId: hit.id,
+          value: hit.text,
+          color: hit.color,
+          fontSize: hit.fontSize,
+          angle: angleOf(hit),
+          pivot: pivotOfAnnotation(hit, this.ctx),
+        });
         return;
       }
     }
@@ -911,14 +1268,27 @@ export class Editor {
     this.canvas.setPointerCapture(e.pointerId);
 
     if (tool === "select") {
-      // A resize handle hit wins over reselecting an overlapping annotation:
-      // check the currently selected annotation's handles first.
+      // Rotate-knob vs. resize-handle: nearest-wins, knob as tie-break
+      // (TASK-41 round 2 review fix — see rotateOrResizeTarget's doc
+      // comment). Wins over reselecting an overlapping annotation either way:
+      // check the currently selected annotation's controls first.
       const selected = this.selectedAnnotation();
       if (selected) {
-        const bounds = boundsOf(selected, this.ctx);
-        const h = resizeHandleAt(resizeHandlesFor(selected, bounds), p, this.handleHitRadius(e.pointerType));
-        if (h) {
-          this.resize = { handle: h, original: structuredClone(selected), bounds, changed: false };
+        const target = this.rotateOrResizeTarget(selected, e.pointerType, p);
+        if (target?.kind === "rotate") {
+          this.rotateDrag = {
+            original: structuredClone(selected),
+            pivot: pivotOf(target.bounds),
+            startAngle: target.angle,
+            startPointer: p,
+            changed: false,
+          };
+          this.canvas.style.cursor = ROTATE_CURSOR_ACTIVE;
+          this.render();
+          return;
+        }
+        if (target?.kind === "resize") {
+          this.resize = { handle: target.handle, original: structuredClone(selected), bounds: target.bounds, changed: false };
           this.render();
           return;
         }
@@ -975,10 +1345,45 @@ export class Editor {
   private onMove(p: Point, shiftKey = false, pointerType = ""): void {
     const tool = this.tool;
 
-    // Priority: resize > move > crop drag > draft > hover.
+    // Priority: rotate > resize > move > crop drag > draft > hover.
+    if (this.rotateDrag) {
+      const { original, pivot, startAngle, startPointer } = this.rotateDrag;
+      const newAngle = rotationFromDrag(pivot, startPointer, p, startAngle, shiftKey);
+      const updated = applyRotation(original, newAngle);
+      if (!this.rotateDrag.changed && updated !== original) {
+        // Push before mutate: capture the pre-rotate array on the first frame
+        // that actually changes the angle (same lazy pattern as move/resize;
+        // applyRotation returns `original` by reference when unchanged, so
+        // this is a cheap identity check, no JSON.stringify needed).
+        this.rotateDrag.changed = true;
+        this.history.push(this.snapshot());
+      }
+      if (this.rotateDrag.changed) {
+        this.doc.annotations = this.doc.annotations.map((a) => (a.id === original.id ? updated : a));
+      }
+      this.canvas.style.cursor = ROTATE_CURSOR_ACTIVE;
+      this.render();
+      return;
+    }
+
     if (this.resize) {
       const { handle, original, bounds } = this.resize;
-      const updated = applyResize(original, bounds, handle, p, shiftKey);
+      const angle = angleOf(original);
+      // Resize composition (TASK-41): operate in the shape's unrotated local
+      // frame — inverse-rotate the pointer about the PRE-DRAG pivot
+      // (`pivotOf(bounds)`, fixed for the whole gesture) — then reuse
+      // `applyResize` verbatim, then re-anchor so the pinned corner stays
+      // world-fixed (see rotate.ts's `reanchorDelta` doc comment for the
+      // geometry contract). Every step below is gated on `angle`, so this is
+      // an exact no-op — identical code path — at angle 0.
+      const localP = angle ? unrotatePoint(p, pivotOf(bounds), angle) : p;
+      let updated = applyResize(original, bounds, handle, localP, shiftKey);
+      if (angle) {
+        const anchorLocal = anchorPointFor(original, bounds, handle);
+        const boundsAfter = boundsOf(updated, this.ctx);
+        const d = reanchorDelta(anchorLocal, bounds, boundsAfter, angle);
+        if (d.x !== 0 || d.y !== 0) updated = translateAnnotation(updated, d.x, d.y);
+      }
       if (!this.resize.changed && !this.annotationsEqual(updated, original)) {
         // Push before mutate: capture the pre-resize array on the first frame
         // that actually changes geometry (same lazy pattern as `move` above).
@@ -1045,9 +1450,12 @@ export class Editor {
     }
 
     if (tool === "select") {
-      const resizeHover = resizeHandleAt(this.selectedHandles(), p, this.handleHitRadius(pointerType));
-      if (resizeHover) {
-        this.canvas.style.cursor = this.cursorForResizeHandle(resizeHover);
+      const selected = this.selectedAnnotation();
+      const target = selected ? this.rotateOrResizeTarget(selected, pointerType, p) : null;
+      if (target?.kind === "rotate") {
+        this.canvas.style.cursor = ROTATE_CURSOR_HOVER;
+      } else if (target?.kind === "resize") {
+        this.canvas.style.cursor = this.cursorForResizeHandle(target.handle);
       } else {
         const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
         this.canvas.style.cursor = hit ? "move" : "default";
@@ -1084,12 +1492,25 @@ export class Editor {
         this.lastTapUp = null;
         this.move = null;
         this.canvas.style.cursor = "default";
-        this.openTextEditor(hit.at, { editId: hit.id, value: hit.text, color: hit.color, fontSize: hit.fontSize });
+        this.openTextEditor(hit.at, {
+          editId: hit.id,
+          value: hit.text,
+          color: hit.color,
+          fontSize: hit.fontSize,
+          angle: angleOf(hit),
+          pivot: pivotOfAnnotation(hit, this.ctx),
+        });
         return;
       }
       this.lastTapUp = { time: performance.now(), p };
     } else {
       this.lastTapUp = null;
+    }
+
+    if (this.rotateDrag) {
+      this.rotateDrag = null;
+      this.canvas.style.cursor = this.tool === "select" ? "default" : "crosshair";
+      return;
     }
 
     if (this.resize) {
@@ -1139,12 +1560,19 @@ export class Editor {
 
   /**
    * Open the inline text editor at `at`. With no `opts`, this is the TASK-7
-   * new-text flow: color/fontSize come from the toolbar's current settings.
-   * With `opts` (TASK-23 double-click re-edit), the editor is pre-filled from
-   * an existing `TextAnnotation` — `editId` routes `commitTextEditor` into
-   * edit-mode semantics (see there) instead of creating a new annotation.
+   * new-text flow: color/fontSize come from the toolbar's current settings,
+   * angle is always 0 (a brand-new annotation is never rotated). With `opts`
+   * (TASK-23 double-click re-edit, TASK-35.10 touch double-tap, TASK-41
+   * rotation), the editor is pre-filled from an existing `TextAnnotation` —
+   * `editId` routes `commitTextEditor` into edit-mode semantics (see there)
+   * instead of creating a new annotation; `angle`/`pivot` (both computed
+   * once by the caller from the pre-edit annotation) position the CSS-rotated
+   * `<input>` — see `positionTextEditor`.
    */
-  private openTextEditor(at: Point, opts?: { editId: string; value: string; color: string; fontSize: number }): void {
+  private openTextEditor(
+    at: Point,
+    opts?: { editId: string; value: string; color: string; fontSize: number; angle: number; pivot: Point },
+  ): void {
     this.commitTextEditor(); // idempotent: commit any already-open editor first
 
     const input = document.createElement("input");
@@ -1155,12 +1583,14 @@ export class Editor {
     // path applies docScale (TASK-35.16, web-only, always 1 on desktop).
     const fontSize = opts?.fontSize ?? this.fontSize * this.docScale;
     const editId = opts?.editId ?? null;
+    const angle = opts?.angle ?? 0;
+    const pivot = opts?.pivot ?? { x: 0, y: 0 };
     const reposition = () => this.positionTextEditor();
     // Reassigned below, once the visualViewport listeners (if any) actually
     // exist; the object stored on `this.textEdit` shares this same closure
     // variable, so the later reassignment is visible through it too.
     let clearViewportGuard = () => {};
-    this.textEdit = { input, at, color, fontSize, editId, reposition, clearViewportGuard: () => clearViewportGuard() };
+    this.textEdit = { input, at, color, fontSize, editId, angle, pivot, reposition, clearViewportGuard: () => clearViewportGuard() };
 
     if (opts) {
       // Edit mode (TASK-23): drop the selection/resize/move gesture state so
@@ -1171,6 +1601,7 @@ export class Editor {
       this.selectedId = null;
       this.move = null;
       this.resize = null;
+      this.rotateDrag = null;
     }
 
     this.positionTextEditor();
@@ -1219,17 +1650,29 @@ export class Editor {
     this.render();
   }
 
-  /** Recompute the input's CSS-px position/font from the stored bitmap-px `at`. */
+  /**
+   * Recompute the input's CSS-px position/font from the stored bitmap-px
+   * `at`. When rotated (TASK-41), `at` (the annotation's own local-frame
+   * corner) is first mapped to its world position via `rotatePoint(at,
+   * pivot, angle)` — the same point `render.ts`'s canvas transform would
+   * draw that corner at — and a CSS `rotate(angle)` with `transform-origin:
+   * 0 0` reproduces the same visual rotation around the input's own
+   * (now-world-positioned) top-left corner; no transform is set at all at
+   * angle 0, so this is byte-identical to the pre-TASK-41 behavior there.
+   */
   private positionTextEditor(): void {
     if (!this.textEdit) return;
-    const { input, at, fontSize } = this.textEdit;
+    const { input, at, fontSize, angle, pivot } = this.textEdit;
     const canvasRect = this.canvas.getBoundingClientRect();
     const stageRect = this.canvas.parentElement!.getBoundingClientRect();
     const scale = canvasRect.width / this.canvas.width;
+    const worldAt = angle ? rotatePoint(at, pivot, angle) : at;
 
-    input.style.left = `${canvasRect.left - stageRect.left + at.x * scale}px`;
-    input.style.top = `${canvasRect.top - stageRect.top + at.y * scale}px`;
+    input.style.left = `${canvasRect.left - stageRect.left + worldAt.x * scale}px`;
+    input.style.top = `${canvasRect.top - stageRect.top + worldAt.y * scale}px`;
     input.style.font = fontString(fontSize * scale);
+    input.style.transform = angle ? `rotate(${angle}rad)` : "";
+    input.style.transformOrigin = angle ? "0 0" : "";
   }
 
   /**
@@ -1243,8 +1686,13 @@ export class Editor {
    *   unchanged value is a no-op (no history push, just re-render to
    *   un-hide it); a changed value pushes once and replaces the annotation
    *   in place — `{ ...existing, text }` keeps id/color/fontSize/at (and
-   *   strokeWidth) exactly as they were, so this is a single undo step that
-   *   only ever touches `text`.
+   *   strokeWidth/angle) exactly as they were, so this is a single undo step
+   *   that only ever touches `text` — except that typing widens or narrows
+   *   the local box, which moves its pivot; for a rotated annotation (TASK-41)
+   *   that would visibly slide the string, so a `reanchorDelta(at, ...)`
+   *   translation pins `at` back to its pre-edit world position (an exact
+   *   no-op at angle 0, so this is byte-identical to the pre-TASK-41 result
+   *   there).
    */
   private commitTextEditor(): void {
     if (!this.textEdit) return;
@@ -1265,7 +1713,13 @@ export class Editor {
           if (this.selectedId === editId) this.selectedId = null;
         } else if (text !== existing.text) {
           this.history.push(this.snapshot());
-          this.doc.annotations = this.doc.annotations.map((a) => (a.id === editId ? { ...existing, text } : a));
+          const boundsBefore = boundsOf(existing, this.ctx);
+          const updated = { ...existing, text };
+          const boundsAfter = boundsOf(updated, this.ctx);
+          const angle = angleOf(existing);
+          const d = reanchorDelta(existing.at, boundsBefore, boundsAfter, angle);
+          const final = d.x || d.y ? translateAnnotation(updated, d.x, d.y) : updated;
+          this.doc.annotations = this.doc.annotations.map((a) => (a.id === editId ? final : a));
         }
         // else: unchanged — no history push, just fall through to re-render
         // (which un-hides the annotation now that textEdit is cleared).

@@ -17,6 +17,18 @@ interface AnnotationBase {
   kind: AnnotationKind;
   color: string;
   strokeWidth: number;
+  // Rotation in radians, clockwise (canvas y-down coordinates — feeds
+  // ctx.rotate() directly), normalized to (-π, π]. Absent or 0 means
+  // unrotated. The pivot is always the center of the annotation's unrotated
+  // (local-frame) boundsOf box (src/editor/bounds.ts) — never per-kind, never
+  // stored — computed on demand by rotate.ts's pivotOfAnnotation. Rotation is
+  // render-time only: it is never baked into a shape's points (arrow's
+  // from/to, rect's a/b, etc.) — the same "annotations are data, not pixels"
+  // invariant every other transform in this model follows. Every kind
+  // carries the field (not just the ones with a rotate-handle affordance, see
+  // rotate.ts's canRotate) so a future multi-select group rotation can rotate
+  // a mixed selection uniformly.
+  angle?: number;
 }
 
 export interface ArrowAnnotation extends AnnotationBase {

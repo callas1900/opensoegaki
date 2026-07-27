@@ -2,9 +2,13 @@
  * Pure geometry for the select tool's resize handles: handle layout,
  * hit-testing, and per-kind transforms that turn a dragged handle + pointer
  * position into an updated annotation. Mirrors crop.ts's structure — DOM-free,
- * ctx-free (bounds are supplied by the caller via hittest.ts's `boundsOf`) —
+ * ctx-free (bounds are supplied by the caller via bounds.ts's `boundsOf`) —
  * and deliberately NOT imported by exporter.ts, same import-boundary
- * discipline as crop.ts/hittest.ts.
+ * discipline as crop.ts/hittest.ts. Also owns the rotate knob's layout
+ * (`rotateHandleFor`) and the resize-composition anchor point
+ * (`anchorPointFor`) — selection-chrome geometry, not core rotation math, so
+ * it lives here rather than in the leaf `rotate.ts` (which this module
+ * imports `pivotOf`/`rotatePoint` from).
  */
 import type {
   Annotation,
@@ -15,7 +19,8 @@ import type {
   RectAnnotation,
   TextAnnotation,
 } from "./model";
-import type { Bounds } from "./hittest";
+import type { Bounds } from "./bounds";
+import { pivotOf, rotatePoint, unrotatePoint } from "./rotate";
 
 /** The 8 corner/edge handles used by box-shaped kinds (rect, image). */
 export type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -90,21 +95,122 @@ function boxHandles(b: Bounds): HandleSpec[] {
 }
 
 /**
- * The handle whose center is within Euclidean `hitRadius` of `p`, or null if
- * none qualify. When several handles are within radius, the nearest one wins.
- * Same nearest-within-radius pattern as `crop.ts`'s `handleAt`.
+ * The handle whose center is nearest to `p`, among those within Euclidean
+ * `hitRadius`, plus that distance — or `null` if none qualify. The one owner
+ * of "which handle did the pointer land on"; `handleAt` (below) and
+ * `canvas.ts`'s knob-vs-resize-handle tie-break (TASK-41 round 2) both build
+ * on this instead of re-deriving nearest-within-radius themselves.
  */
-export function handleAt(handles: HandleSpec[], p: Point, hitRadius: number): ResizeHandle | null {
-  let best: ResizeHandle | null = null;
-  let bestDist = hitRadius;
+export function nearestHandle(handles: HandleSpec[], p: Point, hitRadius: number): { id: ResizeHandle; dist: number } | null {
+  let best: { id: ResizeHandle; dist: number } | null = null;
   for (const h of handles) {
     const dist = Math.hypot(p.x - h.pos.x, p.y - h.pos.y);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = h.id;
+    if (dist < hitRadius && (!best || dist < best.dist)) {
+      best = { id: h.id, dist };
     }
   }
   return best;
+}
+
+/**
+ * The handle whose center is within Euclidean `hitRadius` of `p`, or null if
+ * none qualify. When several handles are within radius, the nearest one wins.
+ * Same nearest-within-radius pattern as `crop.ts`'s `handleAt`. Thin delegate
+ * to `nearestHandle` — one owner of the nearest-within-radius search.
+ */
+export function handleAt(handles: HandleSpec[], p: Point, hitRadius: number): ResizeHandle | null {
+  return nearestHandle(handles, p, hitRadius)?.id ?? null;
+}
+
+/**
+ * The rotate knob for `bounds` at `angle`, `offset` bitmap px outside the
+ * north edge (in the shape's local frame). Returns the LOCAL position — draw
+ * it inside the selection overlay's rotated `save/rotate/restore` transform —
+ * and the WORLD position — hit-test it directly against the raw pointer, no
+ * transform needed. Draw and hit-test MUST both go through this one function
+ * so they can never disagree about where the knob is.
+ *
+ * Three placements, tried in order, each tested against the inset rect
+ * `[margin, canvasSize.w - margin] × [margin, canvasSize.h - margin]` (`margin`
+ * keeps the knob's own drawn radius, not just its center point, on-canvas):
+ * 1. **"north"** — the knob's natural position, if its WORLD point falls
+ *    inside the inset rect.
+ *  2. **"south"** — the shape's south edge instead, if THAT falls inside (a
+ *    rotated shape near the top of the capture can swing "north" off-canvas).
+ * 3. **"clamped"** — neither side fits (a large or heavily rotated shape):
+ *    component-wise clamp the NORTH world position into the inset rect, then
+ *    recompute `local` by inverse-rotating the clamped world point about the
+ *    same pivot. Recomputing `local` here is load-bearing — the connector
+ *    line (drawn inside the rotated overlay transform, in local coordinates)
+ *    must still point at the actual knob position, and draw/hit-test must
+ *    stay derived from this one function.
+ */
+export function rotateHandleFor(
+  bounds: Bounds,
+  angle: number,
+  offset: number,
+  canvasSize: { w: number; h: number },
+  margin: number,
+): { local: Point; world: Point; placement: "north" | "south" | "clamped" } {
+  const pivot = pivotOf(bounds);
+  const midX = bounds.x + bounds.w / 2;
+  const inset = { x0: margin, y0: margin, x1: canvasSize.w - margin, y1: canvasSize.h - margin };
+
+  const northLocal = { x: midX, y: bounds.y - offset };
+  const northWorld = rotatePoint(northLocal, pivot, angle);
+  if (withinInset(northWorld, inset)) {
+    return { local: northLocal, world: northWorld, placement: "north" };
+  }
+
+  const southLocal = { x: midX, y: bounds.y + bounds.h + offset };
+  const southWorld = rotatePoint(southLocal, pivot, angle);
+  if (withinInset(southWorld, inset)) {
+    return { local: southLocal, world: southWorld, placement: "south" };
+  }
+
+  const worldClamped = {
+    x: clamp(northWorld.x, inset.x0, inset.x1),
+    y: clamp(northWorld.y, inset.y0, inset.y1),
+  };
+  const localClamped = unrotatePoint(worldClamped, pivot, angle);
+  return { local: localClamped, world: worldClamped, placement: "clamped" };
+}
+
+function withinInset(p: Point, inset: { x0: number; y0: number; x1: number; y1: number }): boolean {
+  return p.x >= inset.x0 && p.x <= inset.x1 && p.y >= inset.y0 && p.y <= inset.y1;
+}
+
+/**
+ * The point pinned by `handle` — diagonally opposite corner for box (rect/
+ * image) and text handles, the fixed (non-dragged) endpoint for arrow, the
+ * center for badge/highlight (badge resize never moves `at`; highlight is
+ * resize-exempt, so this is never actually exercised in a drag) — in LOCAL
+ * coordinates. Its local coordinates are invariant across `applyResize`,
+ * which is exactly what lets `canvas.ts`'s rotate-composed resize gesture
+ * re-anchor the pinned point back to its pre-drag world position via
+ * `rotate.ts`'s `reanchorDelta` (see that function's doc comment for the
+ * geometry contract).
+ */
+export function anchorPointFor(a: Annotation, bounds: Bounds, handle: ResizeHandle): Point {
+  switch (a.kind) {
+    case "arrow":
+      return handle === "from" ? a.to : a.from;
+    case "badge":
+      return { x: a.at.x, y: a.at.y };
+    case "highlight":
+      return pivotOf(bounds);
+    case "rect":
+    case "image":
+    case "text": {
+      // Same pinned-corner formula resizeBox/applyTextResize already use:
+      // the corner NOT in the handle's own direction stays fixed.
+      const dir = BOX_HANDLE_DIR[handle as BoxHandle];
+      return {
+        x: dir.west ? bounds.x + bounds.w : bounds.x,
+        y: dir.north ? bounds.y + bounds.h : bounds.y,
+      };
+    }
+  }
 }
 
 // ---- per-kind transforms ----------------------------------------------------

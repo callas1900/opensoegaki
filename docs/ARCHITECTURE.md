@@ -98,13 +98,22 @@ undoing/redoing while cropping, never leaves a dead toolbar state.
 
 ## Selection & hit-testing
 
-`src/editor/hittest.ts` is pure, format-agnostic geometry (`boundsOf`, `hitTest`)
-over the annotation model — the same code a future `.soegaki` loader or SVG exporter
-could reuse. It is deliberately **never imported by `exporter.ts`**; that import
-boundary is the mechanical guarantee that selection chrome cannot be rasterized
-into exported/copied images. The selection marquee itself is drawn by a private
-`Editor.drawSelectionOverlay` method, called from `Editor.render()` after
-`renderAnnotations` and the draft — i.e. only reachable from the live canvas path.
+`src/editor/bounds.ts` is a pure, leaf, format-agnostic module (imports only
+`model.ts`) owning "where a shape is": `Bounds`, `boundsOf`, plus the text/badge
+metrics (`fontString`, `badgeHalfWidth`) — moved here from `hittest.ts`/`render.ts`
+(TASK-41) so `render.ts` has a legal way to reach `boundsOf` without a
+`hittest.ts` import cycle. **`boundsOf` always returns the shape's UNROTATED,
+local-frame axis-aligned box** — it never consults `a.angle`. Every resize
+handle, marquee coordinate, and hit-test below is expressed in this local
+frame; world position is `rotate(local, pivot, a.angle)` (see "Rotating
+selected annotations" below). `src/editor/hittest.ts` (`hitTest`) is likewise
+pure and format-agnostic — the same code a future `.soegaki` loader or SVG
+exporter could reuse. It is deliberately **never imported by `exporter.ts`**;
+that import boundary is the mechanical guarantee that selection chrome cannot
+be rasterized into exported/copied images. The selection marquee itself is
+drawn by a private `Editor.drawSelectionOverlay` method, called from
+`Editor.render()` after `renderAnnotations` and the draft — i.e. only
+reachable from the live canvas path.
 
 Hit-testing rules:
 - **Rects use an edge band, not the filled interior** — since rects render as
@@ -116,6 +125,12 @@ Hit-testing rules:
 - Tolerance is computed in **bitmap pixels**, scale-compensated at the call site
   in `canvas.ts` (`BASE_TOL_PX * (canvas.width / rect.width)`), since the canvas
   is CSS-scaled but `hittest.ts` itself stays unit-agnostic.
+- **Rotated annotations (TASK-41):** before running the per-kind test above,
+  `hitsAnnotation` inverse-rotates the pointer about the shape's pivot
+  (`unrotatePoint(p, pivotOfAnnotation(a, measure), a.angle)`) — rotation is an
+  isometry, so every distance-based tolerance test above stays valid unchanged.
+  Guarded by `if (a.angle)`, so an unrotated annotation (the overwhelming
+  majority) takes the exact pre-TASK-41 code path.
 
 ## Resizing selected annotations
 
@@ -125,7 +140,7 @@ discipline as `crop.ts`/`hittest.ts`: DOM-free, ctx-free, and deliberately
 per-kind resize transforms:
 
 - `resizeHandlesFor(a, bounds)` returns the `HandleSpec[]` for an annotation,
-  positioned from the `Bounds` the caller already has via `hittest.ts`'s
+  positioned from the `Bounds` the caller already has via `bounds.ts`'s
   `boundsOf`. Box kinds (rect, image) get all 8 corner+edge handles; text and
   badge get the 4 corners only; arrow's 2 handles are its `from`/`to` points
   read directly off the annotation (not the normalized bounds), so each
@@ -184,6 +199,152 @@ the select tool is active shows a matching directional cursor
 (`cursorForResizeHandle`: nwse/nesw/ns/ew for box handles, "move" for arrow
 endpoints, since dragging an endpoint repositions a point rather than
 resizing along an axis).
+
+## Rotating selected annotations
+
+`src/editor/rotate.ts` (TASK-41) is a pure, leaf module (imports only `model.ts`
+types and `bounds.ts`) owning rotation math: pivot/rotate/unrotate, angle
+normalization, drag→angle conversion with Shift-snap, corner rotation, and the
+re-anchor translation that lets resize compose with rotation without drift.
+Like `hittest.ts`/`resize.ts`/`crop.ts`, it is **never imported by
+`exporter.ts`**.
+
+**Semantics.** `angle?: number` on `AnnotationBase` (every kind carries it) is
+radians, **clockwise in canvas y-down coordinates** — exactly what
+`ctx.rotate()` and CSS `transform: rotate()` both consume — normalized to
+`(-π, π]`; absent or `0` means unrotated. Rotation is render-time only, never
+baked into a shape's points (arrow's `from`/`to`, rect's `a`/`b`, etc.) — the
+same "annotations are data, not pixels" invariant every other transform in the
+model follows. **The pivot is always the center of the annotation's unrotated
+`boundsOf` box** (`rotate.ts`'s `pivotOfAnnotation`) — one rule, no per-kind
+special case; for a badge this box is already centered on `a.at`, so the pivot
+degenerates to `a.at` with no extra code.
+
+**Rendering and hit-testing get rotation from one generic transform.**
+`render.ts`'s `renderAnnotations` wraps a rotated shape's draw call in
+`save/translate(pivot)/rotate/translate(-pivot)/restore`; `hittest.ts`'s
+`hitsAnnotation` inverse-rotates the pointer about the same pivot before
+running the unchanged per-kind test (see "Selection & hit-testing" above).
+Both are guarded by `if (a.angle)`, so an unrotated document — still the
+overwhelming majority — takes the byte-identical pre-TASK-41 code path and
+pays zero extra `measureText` calls. Because `exporter.ts` calls the same
+`renderAnnotations`, export/copy rasterize rotation for free with no changes
+to `exporter.ts` itself.
+
+**Rotatable kinds.**
+
+| Kind | Rotatable? | Rationale |
+| --- | --- | --- |
+| rect, image, text, badge | Yes | Standard select-tool rotate-knob affordance |
+| arrow | No | Direction is already first-class in `from`/`to`; an `angle` field would be a second, redundant representation of the same fact, and the existing `to`-endpoint drag with Shift-45° snap (see "Resizing selected annotations") already rotates it |
+| highlight | No | Freehand marker stroke; move/delete-only, the same rationale as its TASK-29 resize exemption |
+
+Both exempt kinds still **render** rotated if given an angle (the generic
+transform doesn't check `canRotate`) — only the select-tool affordance is
+gated, via `rotate.ts`'s `canRotate(kind)` — so a future multi-select group
+rotation (TASK-42, out of scope here) needs no new render work.
+
+**Resize composes with rotation via a re-anchor translation (drift-free by
+construction).** `boundsOf` always stays local-frame/unrotated, so resizing a
+rotated shape works entirely in that local frame: `canvas.ts`'s resize gesture
+inverse-rotates the pointer about the **pre-drag** pivot
+(`pivotOf(bounds)`, fixed for the whole gesture, same anti-drift rationale as
+`move`/`resize`'s existing fixed-`original` pattern), calls the existing
+`applyResize` verbatim, then translates the result so the handle's pinned
+point (`resize.ts`'s `anchorPointFor` — the diagonally opposite corner for
+box/text handles, the fixed endpoint for arrow, the center for badge/
+highlight) lands back on its exact pre-drag world position
+(`rotate.ts`'s `reanchorDelta`). Every one of these steps is gated on
+`angle`, so at `angle === 0` the composed gesture is the exact pre-TASK-41
+code path — `reanchorDelta` returns `{0, 0}` identically there, and
+`applyResize`/`resizeHandlesFor`/`handleAt` are untouched by TASK-41 (the
+TASK-29 regression proof: `resize.test.ts` passes unmodified). The same
+`reanchorDelta` also fixes rotated-text re-edit: typing changes the local box
+width, which would otherwise slide a rotated string, so `commitTextEditor`'s
+edit branch re-anchors `at` the same way.
+
+**Rotate-knob UX.** `resize.ts`'s `rotateHandleFor(bounds, angle, offset,
+canvasSize, margin)` is the one function both drawing and hit-testing call —
+`ROTATE_HANDLE_OFFSET_PX` (24 CSS px, `cropScale()`-compensated) outside the
+selection marquee's padded north edge. **Three placements** are tried in
+order against an inset rect (`canvasSize` shrunk by `margin` —
+`(ROTATE_HANDLE_DRAW_PX / 2 + 2) * cropScale()`, keeping the knob's own drawn
+radius, not just its center point, on-canvas): `"north"` if the natural
+position's world point falls inside the inset; else `"south"` (the shape's
+south edge instead — a rotated shape near the top of the capture can swing
+"north" off-canvas); else `"clamped"` — component-wise clamp of the north
+world position into the inset rect, with `local` recomputed by
+inverse-rotating the clamped world point about the same pivot (load-bearing:
+the connector line, drawn in local coordinates inside the rotated overlay
+transform, must still point at the actual knob). `canvas.ts`'s `rotateDrag`
+gesture state mirrors `move`/`resize`.
+
+**Knob appearance (round 4, user-chosen design "A3").** The rotate knob is a
+naked circular-arrow glyph — a 260° arc (-65°…195°, clockwise) with a filled
+arrowhead and a centre pivot dot, in `PALETTE[0]` over a white casing stroke
+with a soft drop shadow, drawn inside the rotated selection overlay so its
+tilt reads as the current angle. All of its geometry is expressed as ratios
+of `ROTATE_HANDLE_DRAW_PX × cropScale()`; `ROTATE_GLYPH_SEAM_RATIO` (0.705)
+places the connector's seam at the arc casing's outer edge, and
+`ROTATE_GLYPH_OUTER_RATIO` (0.80, the arrowhead base corner plus its casing —
+the glyph's true maximum extent) feeds `knobMargin()`, which the `"clamped"`
+placement of `rotateHandleFor` uses to keep the glyph fully on-canvas. Drawn
+size is independent of grab size: `handleHitRadius()` (12 CSS px, ×2 for
+touch, × `cropScale()`) is unchanged, and knob-vs-resize-handle arbitration
+stays nearest-wins with the knob winning ties. Hover/drag use the inline
+data-SVG rotate cursor with `grab`/`grabbing` fallbacks.
+
+**Knob vs. resize-handle priority is nearest-wins, knob as tie-break**
+(round 2 review fix — giving the knob absolute priority stole clicks meant
+for a resize handle that happened to be nearer). `resize.ts`'s
+`nearestHandle(handles, p, hitRadius)` is the one owner of "nearest handle
+within radius, plus how far" — `handleAt` is now a thin delegate to it.
+`canvas.ts`'s private `rotateOrResizeTarget` computes `nearest =
+nearestHandle(...)` (pointer inverse-rotated into the local frame first, an
+exact no-op at angle 0) and `knobDist = hypot(p − knob.world)` (only when
+`canRotate(kind)`) with the **same** `r = handleHitRadius(pointerType)` for
+both, then arms/hovers rotate iff `knobDist <= r && (nearest === null ||
+knobDist <= nearest.dist)`, else resize iff `nearest !== null`, else falls
+through to `hitTest` (reselect). Both `onDown`'s arm logic and `onMove`'s
+hover-cursor logic call this one method, so they can never disagree about
+which control a pointer position lands on; the knob's draw offset itself is
+never touch-enlarged, only the hit radius `r` is (via `handleHitRadius`'s
+existing `TOUCH_HIT_MULTIPLIER`).
+
+The rotate drag itself is **relative** (`rotate.ts`'s `rotationFromDrag`:
+`startAngle +` the pointer's own angular delta from the pivot, so grabbing the
+knob never snaps the shape to the pointer), with Shift snapping the absolute
+result to 15° (`ROTATION_SNAP_RAD`) so 0° stays reachable; a lazy
+`history.push` on the first frame that actually changes the angle keeps this
+a single undo step, same pattern as move/resize. `onMove`'s priority is
+**rotate → resize → move → crop drag → draft → hover**. The floating delete
+button (`positionSelectionControls`) anchors to the *rotated* NE corner
+(`rotate.ts`'s `rotatedCorners`) instead of the raw padded box, and its
+existing "drop below the corner" viewport-clamp fallback now has **two
+independent triggers**, checked before the fallback applies: (1) the original
+top-edge clamp (selection near the stage's top edge, no room above the
+corner) and (2) the rotate knob (TASK-41) landing within
+`HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER + SELECTION_CONTROLS_MARGIN_PX` of the
+*ideal* (unclamped) button rect — using the touch-worst-case radius
+unconditionally, since layout must not depend on which pointer type happens
+to be active. **Cursor (round 3):** a custom `url()` data-SVG cursor —
+`ROTATE_CURSOR_HOVER`/`ROTATE_CURSOR_ACTIVE` module constants in `canvas.ts`,
+set where the knob is hovered/actively dragged (no other cursor site
+changes). There is no standard CSS rotate cursor, so this was deferred at
+TASK-41's first pass; adopted once real-app feedback showed the plain
+`grab`/`grabbing` keywords alone didn't read as "rotate" either. The glyph is
+two overlaid arc+arrow strokes — a wider white one underneath, a narrower
+black one on top — so it stays legible over both light and dark backgrounds
+(the same white-outline-then-color-pass trick `render.ts`'s arrow/rect/text
+drawing already uses), with a `, grab` / `, grabbing` keyword fallback for a
+browser that rejects the custom cursor image. `#` stays percent-encoded as
+`%23` in the data URI — WebView2 (the desktop app's webview) truncates at a
+literal `#`, reading it as a fragment separator.
+
+**Out of scope (TASK-41):** multi-select group rotation (TASK-42, though the
+pure math in `rotate.ts` is written to be reusable there), Escape-to-cancel a
+rotate drag, double-click-the-knob-to-reset, and a live angle readout while
+dragging (the knob glyph's own tilt serves as a coarse one).
 
 ## Inserting images as annotations
 
@@ -257,18 +418,28 @@ is one PNG blob per id, keyed the same way `Doc.images` is keyed today.
 
 Keep this table current — the `reviewer` agent checks IPC contract drift.
 
-The selection tool (hit-test/move/delete/resize) is a pure `src/` feature and
-introduces no IPC changes; the table above is unaffected — including its
-TASK-29 resize-handle addition, which is pure geometry in `resize.ts` plus
-`canvas.ts` pointer-event wiring, no Rust or IPC surface touched. The inline
-text editor (below) is likewise pure `src/`, including its TASK-23
-double-click re-edit addition; `save_png` is the only IPC addition on top of
-the original two commands. The crop tool (below) is also pure `src/` and
-introduces no IPC changes — including its v2 handle-based/mouse-only-apply
+The selection tool (hit-test/move/delete/resize/rotate) is a pure `src/`
+feature and introduces no IPC changes; the table above is unaffected —
+including its TASK-29 resize-handle and TASK-41 rotate-handle additions, both
+pure geometry (`resize.ts`/`rotate.ts`/`bounds.ts`) plus `canvas.ts`
+pointer-event wiring, no Rust or IPC surface touched. The inline text editor
+(below) is likewise pure `src/`, including its TASK-23 double-click re-edit
+and TASK-41 rotated-re-edit additions; `save_png` is the only IPC addition on
+top of the original two commands. The crop tool (below) is also pure `src/`
+and introduces no IPC changes — including its v2 handle-based/mouse-only-apply
 revision, which is pure `src/` UI/interaction rework with no Rust or IPC
 surface touched. Inserting images as annotations (above) adds the two
 commands in the table above, plus the `clipboard-manager:allow-read-image`
 capability for the Ctrl+Shift+V clipboard-image path.
+
+**Import boundary (TASK-41 addition):** `exporter.ts`'s transitive import
+graph is, and must remain, exactly `exporter → render → {bounds, rotate} →
+model` — `bounds.ts` and `rotate.ts` are pure geometry/math leaves with no
+selection-chrome knowledge, so they are safe additions to that graph.
+`exporter.ts` must never reach `hittest.ts`, `resize.ts`, or `crop.ts`,
+directly or transitively — that boundary is the mechanical guarantee that
+selection/crop/resize/rotate *chrome* (marquees, handles, knobs, dimming)
+can never be rasterized into an exported or copied image.
 
 ## Keyboard shortcuts
 

@@ -4,70 +4,62 @@
  */
 import type { Annotation, ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation } from "./model";
 import { contrastText, HIGHLIGHTER_WIDTH_SCALE } from "./model";
+import { badgeHalfWidth, fontString } from "./bounds";
+import { pivotOfAnnotation } from "./rotate";
 
 const OUTLINE = "rgba(255,255,255,0.9)";
 
-export const FONT_STACK = "system-ui, sans-serif";
-export function fontString(fontSize: number): string {
-  return `bold ${fontSize}px ${FONT_STACK}`;
-}
-
-// Lazily-created offscreen 2D context used only for text-width measurements
-// taken outside of a live draw call (badgeHalfWidth below, called from
-// hittest.ts/canvas.ts, which have no CanvasRenderingContext2D of their own
-// to measure with).
-let measureCtx: CanvasRenderingContext2D | null = null;
-function getMeasureCtx(): CanvasRenderingContext2D {
-  if (!measureCtx) {
-    const ctx = document.createElement("canvas").getContext("2d");
-    if (!ctx) throw new Error("2D canvas is not available");
-    measureCtx = ctx;
-  }
-  return measureCtx;
-}
-
 /**
- * Half-width of a badge's visible shape, in bitmap px. Auto badges are
- * perfect circles, so this is just `a.radius`. Manual (fixed-number) badges
- * are drawn as a rounded rect that widens to fit the number instead of
- * shrinking the font (see `drawBadge`); this mirrors that same layout math so
- * hit-testing and selection bounds (hittest.ts's `boundsOf`, canvas.ts) never
- * disagree with rendering about where a manual badge's edge is.
+ * Draw every annotation in `list`. Unrotated annotations (the overwhelming
+ * majority — `if (!a.angle)`) take the exact byte-identical path this
+ * function always has, at zero extra cost (no `measureText` for the pivot).
+ * A rotated annotation is wrapped in the standard
+ * translate(pivot)/rotate/translate(-pivot) transform around the center of
+ * its own unrotated `boundsOf` box (`pivotOfAnnotation`, rotate.ts) — the
+ * single generic mechanism that makes every kind rotate correctly with no
+ * per-kind drawing changes. `exporter.ts` calls this same function on its
+ * offscreen context, so rotation is exported for free.
  */
-export function badgeHalfWidth(a: BadgeAnnotation): number {
-  if (!a.manual) return a.radius;
-  const ctx = getMeasureCtx();
-  ctx.font = fontString(a.radius * 1.2);
-  const textWidth = ctx.measureText(String(a.number)).width;
-  return Math.max(a.radius, textWidth / 2 + a.radius * 0.55);
-}
-
 export function renderAnnotations(
   ctx: CanvasRenderingContext2D,
   list: Annotation[],
   images: ReadonlyMap<string, ImageBitmap>,
 ): void {
   for (const a of list) {
-    switch (a.kind) {
-      case "arrow":
-        drawArrow(ctx, a);
-        break;
-      case "rect":
-        drawRect(ctx, a);
-        break;
-      case "text":
-        drawText(ctx, a);
-        break;
-      case "highlight":
-        drawHighlight(ctx, a);
-        break;
-      case "badge":
-        drawBadge(ctx, a);
-        break;
-      case "image":
-        drawImageAnnotation(ctx, a, images);
-        break;
+    if (!a.angle) {
+      drawOne(ctx, a, images);
+      continue;
     }
+    ctx.save();
+    const pivot = pivotOfAnnotation(a, ctx);
+    ctx.translate(pivot.x, pivot.y);
+    ctx.rotate(a.angle);
+    ctx.translate(-pivot.x, -pivot.y);
+    drawOne(ctx, a, images);
+    ctx.restore();
+  }
+}
+
+function drawOne(ctx: CanvasRenderingContext2D, a: Annotation, images: ReadonlyMap<string, ImageBitmap>): void {
+  switch (a.kind) {
+    case "arrow":
+      drawArrow(ctx, a);
+      break;
+    case "rect":
+      drawRect(ctx, a);
+      break;
+    case "text":
+      drawText(ctx, a);
+      break;
+    case "highlight":
+      drawHighlight(ctx, a);
+      break;
+    case "badge":
+      drawBadge(ctx, a);
+      break;
+    case "image":
+      drawImageAnnotation(ctx, a, images);
+      break;
   }
 }
 
