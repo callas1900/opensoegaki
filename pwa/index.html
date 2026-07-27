@@ -119,6 +119,7 @@
           <p class="welcome-hint">Paste a screenshot, or choose a photo to get started.</p>
           <button id="welcome-pick" data-cap="pickImage">Choose Photo</button>
           <p class="welcome-privacy">Runs entirely on your device — images are never uploaded.</p>
+          <p id="welcome-install" hidden>Install for a full-screen, offline experience — on iPhone: <strong>Share &rarr; Add to Home Screen</strong>.</p>
           <p class="welcome-version">OpenSoegaki <span id="app-version"></span></p>
         </div>
       </main>
@@ -148,14 +149,6 @@
           <button id="badge-num-chip" title="Pin this number" disabled></button>
         </div>
       </section>
-    </div>
-    <div id="install-hint" role="status" hidden>
-      <span id="install-hint-icon" aria-hidden="true">📲</span>
-      <span>
-        <strong class="install-hint-title">Install this app</strong>
-        Tap <strong>Share</strong> → <strong>Add to Home Screen</strong>
-      </span>
-      <button id="install-hint-dismiss" aria-label="Dismiss">×</button>
     </div>
     <script type="module" src="../src/main-web.ts"></script>
   </body>

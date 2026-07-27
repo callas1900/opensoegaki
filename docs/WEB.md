@@ -32,7 +32,7 @@ not change or regress the Windows/macOS desktop (Tauri) build.
 | Stylesheet | `src/styles.css` | shared (platform-specific rules are no-ops on the other side) | shared |
 | Platform contract | `src/platform/io.ts` (`PlatformIO` + `Capabilities`) | shared interface | shared interface |
 | Platform I/O implementation | `src/platform/web.ts` / `src/platform/tauri.ts` | **web.ts**: file-input picker, Web Share, ClipboardItem copy | **tauri.ts**: OS capture, native dialogs, OS clipboard, drag-out, file drop |
-| Entry point | `src/main-web.ts` / `src/main.ts` | **main-web.ts**: SW registration, install hint, version/privacy fill | **main.ts**: capture button, macOS permission modal |
+| Entry point | `src/main-web.ts` / `src/main.ts` | **main-web.ts**: SW registration, install invitation, version/privacy fill | **main.ts**: capture button, macOS permission modal |
 | HTML shell | `pwa/index.html` / `index.html` | **pwa/index.html** (+ manifest, `sw.js`, icons in `pwa/public/`) | **index.html** |
 | Build config / output | `vite.config.web.ts` → `dist-web/` | web only | `vite.config.ts` → `dist/` (Tauri `frontendDist`) |
 | Native backend | `src-tauri/` (Rust: capture, tray, hotkeys, drag-out, clipboard) | — (zero inputs from `src-tauri/`) | desktop only |
@@ -60,7 +60,7 @@ All Tauri coupling lives in `src/main.ts`. It is inverted behind a single interf
 - `src/main.ts` — thin desktop entry: `bootstrapEditor(createTauriIO())` + the
   desktop-only capture button + permission modal.
 - `src/main-web.ts` — thin web entry: `bootstrapEditor(createWebIO())` + service-worker
-  registration + iOS install hint.
+  registration + the welcome-screen install invitation.
 
 **Capability-gated UI:** capability-specific buttons in the shared HTML carry
 `data-cap="<name>"`; `bootstrapEditor` hides any element whose capability is false.
@@ -160,10 +160,10 @@ No new Tauri commands; the desktop IPC surface is unchanged.
 - iOS meta: `viewport-fit=cover`, `apple-mobile-web-app-*`, apple-touch-icon,
   theme-color. A CSP `<meta>` tag (`default-src/script-src/style-src 'self'`,
   `img-src 'self' data: blob:`, `connect-src`/`manifest-src 'self'`,
-  `base-uri 'self'`) is always present. iOS has no `beforeinstallprompt` →
-  one-time "Add to Home Screen via the Share sheet" hint on iOS Safari,
-  dismissal persisted to `localStorage` (best-effort; failures there — e.g.
-  Safari private browsing — are swallowed, not fatal).
+  `base-uri 'self'`) is always present. iOS has no `beforeinstallprompt`, so
+  the welcome screen carries a static install invitation, hidden when the
+  app already runs standalone (`display-mode: standalone` or iOS's
+  `navigator.standalone`); no popup, no dismissal state, nothing persisted.
 - `pwa/sw.js`: stale-while-revalidate app-shell cache, versioned cache name
   `soegaki-v<APP_VERSION>` (Vite `define __APP_VERSION__`), `skipWaiting()` +
   `clients.claim()`, purge old caches on activate. **Never caches user content.**
@@ -275,7 +275,7 @@ The web build presents as "OpenSoegaki" with an on-device privacy statement:
 | 12 | CI complexity / interference | Low | Low | Separate path-filtered workflow |
 | 13 | No iOS test automation (dev on Windows/WSL) | Med | High | Real-iPhone manual smoke via checklist below |
 | 14 | `user-scalable=no` a11y trade-off | Low | Med | Acceptable for a canvas tool; revisit on feedback |
-| 15 | No install prompt on iOS | Low | High | One-time Share-sheet hint |
+| 15 | No install prompt on iOS | Low | High | Static welcome-screen install invitation |
 
 ## iOS manual smoke-test checklist
 
@@ -294,3 +294,7 @@ Run on a real iPhone against the deployed Pages URL:
 10. Add to Home Screen via Share sheet → launch standalone (no Safari chrome).
 11. Airplane mode → relaunch from home screen — app loads and edits offline.
 12. While drawing, verify the page never scrolls, zooms, or rubber-bands.
+13. The install invitation is visible on the welcome screen in Safari **in
+    portrait** (it is intentionally suppressed in phone landscape, below a
+    500px viewport height — not a bug if it's missing after rotating), and
+    is absent after launching the app from the home screen (standalone).
