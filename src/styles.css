@@ -151,6 +151,16 @@ body.badge-bar-open #share-bar { display: none; }
    bar instead of the canvas. Desktop body has no class — this is a no-op there. */
 body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
 #stage.empty #canvas { display: none; }
+/* Empty state only: no canvas, no drawing gesture to protect, so unlike the
+   annotating state (touch-action: none, pinned by TASK-35.10) this can
+   safely scroll. #welcome's content is no longer guaranteed to fit inside
+   #stage across every font environment (see the invariant note below) —
+   `pan-y` lets it be reached by scrolling instead of being clipped and lost.
+   `align-content: safe center` keeps the existing centered look while it
+   fits, and falls back to top-anchored (so any overflow lands at the
+   reachable bottom, not an unreachable top) once it doesn't; browsers
+   without `safe` support simply ignore the keyword and behave as before. */
+#stage.empty { touch-action: pan-y; align-content: safe center; }
 
 /* Welcome empty state, shown until an image is loaded */
 #welcome { text-align: center; color: #9aa0a6; }
@@ -182,50 +192,32 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
    height suppression below. */
 #welcome-install { margin: 14px auto 4px; max-width: 30em; font-size: 12px; line-height: 1.7; color: #7d828a; }
 #welcome-install strong { color: #c9cdd2; font-weight: 600; }
-/* Required, not optional. At 844x390 (iPhone landscape) the toolbar (~50px)
-   and #share-bar (~48px) leave #stage ~292px, minus body.web-shell's
-   #stage padding (16px top + 24px bottom = 40px) ~252px available for
-   #welcome, which already measures ~269px on its own (and #stage already
-   overflows by 14px in landscape even without this invitation — scrollH 306
-   vs clientH 292). Adding this invitation grows #welcome by ~57px (measured
-   at 844px width, tall-enough height to defeat the @media suppression below:
-   266.4 -> 323.2px, +56.8px for the margin + two text lines). #stage is
-   `place-items: center` with `touch-action: none`, so overflow is clipped,
-   not scrollable — but the clip lands at the BOTTOM, not the top: the
-   grid's start edge stays put, so it's #welcome-install's own second line
-   and .welcome-version beneath it that get pushed past #stage's bottom edge
-   and end up hidden behind the opaque #share-bar (.welcome-mark at the top
-   is unaffected). So the invitation is suppressed below a 500px viewport
-   height — a threshold that separates every iPhone landscape height
-   (<=430) from every iPhone/iPad portrait height (>=667). */
+/* Landscape density preference, not a hard requirement (#stage.empty now
+   scrolls — see the touch-action: pan-y rule above — so nothing is actually
+   lost if the invitation overflows). At 844x390 (iPhone landscape) the
+   toolbar (~50px) and #share-bar (~48px) leave #stage ~292px, minus
+   body.web-shell's #stage padding (16px top + 24px bottom = 40px) ~252px
+   available for #welcome, which already measures ~269px on its own (and
+   #stage already overflows by 14px in landscape even without this
+   invitation — scrollH 306 vs clientH 292). Adding this invitation grows
+   #welcome by ~57px (measured at 844px width, tall-enough height to defeat
+   this suppression: 266.4 -> 323.2px, +56.8px for the margin + two text
+   lines). Rather than let the scrollbar appear in this cramped landscape
+   strip, the invitation is suppressed below a 500px viewport height — a
+   threshold that separates every iPhone landscape height (<=430) from every
+   iPhone/iPad portrait height (>=667). (While annotating, #stage's overflow
+   is still clipped rather than scrollable per TASK-35.10's touch-action:
+   none — that state is unaffected by any of this, since #welcome-install
+   only ever appears in the empty state.) */
 @media (max-height: 500px) {
   #welcome-install { display: none; }
 }
-/* The copy above was chosen specifically to fit two lines at the narrowest
-   supported viewport — see tests/e2e/welcome-install.spec.ts's 320x568 case
-   for the regression guard. The number that actually governs is the WRAP
-   THRESHOLD, not vertical slack: at `max-width: 30em` / 12px / line-height
-   1.7, this string wraps from two lines to three at a container width of
-   <=266px and stays two lines at >=267px (measured by binary search) — a
-   54px margin above the 320px narrowest-supported-viewport target. This is
-   a discrete, binary failure mode, not a "how much room is left" budget: a
-   wrap costs exactly one extra line, 20.4px (line-height 1.7 x 12px), all
-   at once, not gradually. A prior copy variant's ~18px margin (wrap
-   threshold ~302px) was too close for comfort: CI measures under
-   `system-ui`, but real iPhones render SF Pro, and a ~13% wider typeface is
-   all it takes to eat 18px. Keep this margin wide when editing the copy,
-   and re-measure the wrap threshold (not just line count at 320px) before
-   changing it again.
-   Vertical slack (.welcome-version's bottom edge to #stage's bottom edge,
-   secondary evidence that the two-line layout currently fits, not a budget
-   to spend) at the two tightest supported configurations, both one wrap
-   away from failing: 320x568 (iPhone SE with Display Zoom "Larger Text")
-   leaves 7.4px against a 20.4px wrap cost; 375x667 with the badge bar open
-   leaves 18.8px against the same 20.4px cost, so a wrap there would also
-   land ~1.6px off-stage. Both are guarded by dedicated e2e tests. (A
-   smaller #welcome-install font-size was considered and rejected: 11px
-   only buys 7.4 -> 10.8px of slack, not worth the extra visual-hierarchy
-   risk against .welcome-hint.) */
+/* #welcome's content is no longer required to fit inside #stage's box on
+   one screen: #stage.empty now scrolls (see the touch-action: pan-y rule
+   above) instead of clipping overflow, so the invitation's exact line count
+   and copy length are no longer load-bearing. The only element that must
+   stay visible without scrolling is #welcome-pick — see
+   tests/e2e/welcome-install.spec.ts for the regression guards. */
 .welcome-hint strong { color: #c9cdd2; }
 #stage:not(.empty) #welcome { display: none; }
 

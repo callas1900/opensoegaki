@@ -194,8 +194,13 @@ No new Tauri commands; the desktop IPC surface is unchanged.
   `e.detail >= 2` path in `onDown` is untouched and still the only path a real
   mouse dblclick takes.
 - **Layout:** `touch-action: none` + `overscroll-behavior: none` +
-  `user-select: none` on the stage (the inline text `<input>` overrides
-  `user-select` back to `text`), `-webkit-touch-callout: none` on the canvas,
+  `user-select: none` on the stage while annotating (TASK-35.10, unchanged;
+  the inline text `<input>` overrides `user-select` back to `text`);
+  `touch-action: pan-y` instead while `#stage` is `.empty` (no canvas, no
+  drawing gesture to protect), so the welcome screen's content — including
+  the TASK-43 install invitation — can be reached by scrolling instead of
+  being clipped if it overflows the stage on a given device's font metrics.
+  `-webkit-touch-callout: none` on the canvas,
   `maximum-scale=1, user-scalable=no` on the **web shell's** viewport only
   (desktop's `index.html` viewport is untouched), `100vh` fallback before
   `100dvh` on `#app`, `env(safe-area-inset-*)` padding on the toolbar and
@@ -298,3 +303,7 @@ Run on a real iPhone against the deployed Pages URL:
     portrait** (it is intentionally suppressed in phone landscape, below a
     500px viewport height — not a bug if it's missing after rotating), and
     is absent after launching the app from the home screen (standalone).
+    Confirm the version line below it is either visible outright or
+    reachable with a short scroll (the empty-state stage scrolls now instead
+    of clipping overflow — not a bug if it takes a swipe to see it), and
+    that once a photo is loaded the stage no longer scrolls at all.
