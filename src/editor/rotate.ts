@@ -21,7 +21,25 @@ import { type Bounds, boundsOf } from "./bounds";
 /** Absolute-angle snap increment for a Shift-modified rotate drag: 15°. */
 export const ROTATION_SNAP_RAD = Math.PI / 12;
 
-/** Kinds that offer the select tool's rotate-handle affordance. Arrow's direction is already first-class in from/to (endpoint drag + Shift-45° snap already rotates it); highlight is a freehand stroke, move/delete-only like its TASK-29 resize exemption. Both still render rotated if given an angle. */
+/**
+ * Kinds that offer the select tool's rotate-handle affordance. Arrow's
+ * direction is already first-class in from/to (endpoint drag + Shift-45°
+ * snap already rotates it); highlight is a freehand stroke, move/delete-only
+ * like its TASK-29 resize exemption. Both still render rotated if given an
+ * angle.
+ *
+ * "magnifier" is the third exemption, and for correctness, not taste:
+ * `ctx.drawImage`'s SOURCE rectangle is always axis-aligned in image space
+ * and unaffected by the ctx transform, while the source ring drawn inside
+ * `renderAnnotations`'s generic rotate transform WOULD swing around the
+ * lens's pivot — pointing at a region the loupe does not actually sample, so
+ * the annotation's entire spatial claim would break. (A circle is
+ * rotationally symmetric anyway, so the affordance would be visually
+ * meaningless even where it were safe.) TASK-42 hazard: multi-select group
+ * rotation must treat magnifier as translation-only — rigidly rotate `from`/
+ * `at`, leave `angle` at 0; setting `angle` on a magnifier reproduces the
+ * broken state above.
+ */
 export function canRotate(kind: AnnotationKind): boolean {
   return kind === "rect" || kind === "image" || kind === "text" || kind === "badge";
 }

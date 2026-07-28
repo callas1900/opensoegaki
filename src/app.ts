@@ -61,6 +61,12 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
     document.querySelector("button.tool.active")?.classList.remove("active");
     document.querySelector(`button.tool[data-tool="${t}"]`)?.classList.add("active");
     badgeBar.handleToolChange(t);
+    // Closes a size/color popover left open across an editor-initiated tool
+    // switch (e.g. the magnifier's auto-switch-to-select on commit, TASK-46
+    // Addendum A) — a direct toolbar-button click already closes it in the
+    // click handler below, so this is a safe no-op in that path, not a
+    // double-close (closeOpenPopover() is idempotent).
+    closeOpenPopover();
   };
 
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {

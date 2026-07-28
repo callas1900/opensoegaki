@@ -93,5 +93,13 @@ export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Boun
     }
     case "image":
       return { x: a.at.x, y: a.at.y, w: a.width, h: a.height };
+    case "magnifier":
+      // The LENS circle's bounding square only — the marquee, resize handles
+      // and rotation pivot all want the lens, not a union with the source.
+      // The source circle is a satellite with its own handle family and its
+      // own hit region (see magnifier.ts's magnifierSourceRadius/
+      // magnifierSourceRect, and resize.ts's src-move/src-zoom handles),
+      // never folded into these bounds.
+      return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
   }
 }

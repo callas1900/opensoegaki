@@ -15,23 +15,34 @@ import type {
   ArrowAnnotation,
   BadgeAnnotation,
   ImageAnnotation,
+  MagnifierAnnotation,
   Point,
   RectAnnotation,
   TextAnnotation,
 } from "./model";
 import type { Bounds } from "./bounds";
 import { pivotOf, rotatePoint, unrotatePoint } from "./rotate";
+import { type MagnifierSizeLimits, magnifierSourceRadius, clampZoom } from "./magnifier";
 
 /** The 8 corner/edge handles used by box-shaped kinds (rect, image). */
 export type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 /** The 2 endpoint handles used by arrow. */
 export type ArrowHandle = "from" | "to";
-export type ResizeHandle = BoxHandle | ArrowHandle;
+/** The 2 round handles unique to magnifier: `src-move` (drag the source region) and `src-zoom` (drag to change magnification). Its 4 lens corners reuse the existing `BoxHandle` "nw"|"ne"|"sw"|"se" ids — no new ids needed there. */
+export type MagnifierHandle = "src-move" | "src-zoom";
+export type ResizeHandle = BoxHandle | ArrowHandle | MagnifierHandle;
 
 export interface HandleSpec {
   id: ResizeHandle;
   pos: Point;
+  // Selection-chrome hint only (drawing lives in canvas.ts): square (default,
+  // when absent) for box/corner handles, circle for magnifier's src-move/
+  // src-zoom — keeping the two handle families visually unmistakable.
+  shape?: "square" | "circle";
 }
+
+// SE on the source rim — where the src-zoom handle sits.
+export const MAGNIFIER_ZOOM_HANDLE_ANGLE = Math.PI / 4;
 
 /** Minimum rect size per axis, in bitmap px. */
 export const MIN_RECT_PX = 8;
@@ -56,6 +67,10 @@ export const MAX_BADGE_RADIUS = 400;
  * even when `from`/`to` are not already normalized top-left/bottom-right.
  * Highlight returns `[]` — bbox-scaling a freehand polyline would distort the
  * stroke shape unpredictably, so it is resize-exempt (move/delete only).
+ * Magnifier gets its 4 lens corners (on `bounds`, the lens's bounding square)
+ * PLUS the 2 round source handles, `src-move` listed FIRST so it wins exact
+ * ties in `nearestHandle` (its center sits at `from`, often close to other
+ * chrome, so the tie-break matters more than for the other kinds here).
  */
 export function resizeHandlesFor(a: Annotation, bounds: Bounds): HandleSpec[] {
   switch (a.kind) {
@@ -72,6 +87,18 @@ export function resizeHandlesFor(a: Annotation, bounds: Bounds): HandleSpec[] {
       return cornerHandles(bounds);
     case "highlight":
       return [];
+    case "magnifier": {
+      const sourceRadius = magnifierSourceRadius(a);
+      const zoomHandlePos = {
+        x: a.from.x + sourceRadius * Math.cos(MAGNIFIER_ZOOM_HANDLE_ANGLE),
+        y: a.from.y + sourceRadius * Math.sin(MAGNIFIER_ZOOM_HANDLE_ANGLE),
+      };
+      return [
+        { id: "src-move", pos: a.from, shape: "circle" },
+        { id: "src-zoom", pos: zoomHandlePos, shape: "circle" },
+        ...cornerHandles(bounds),
+      ];
+    }
   }
 }
 
@@ -197,6 +224,13 @@ export function anchorPointFor(a: Annotation, bounds: Bounds, handle: ResizeHand
       return handle === "from" ? a.to : a.from;
     case "badge":
       return { x: a.at.x, y: a.at.y };
+    case "magnifier":
+      // The lens center is invariant under all four magnifier gestures (lens
+      // resize is center-pinned; src-move/src-zoom don't touch `at` at all).
+      // Only ever consulted when `angle !== 0`, which the UI can never
+      // produce for a magnifier (canRotate("magnifier") === false) — same
+      // "not really applicable" precedent as badge/highlight.
+      return { x: a.at.x, y: a.at.y };
     case "highlight":
       return pivotOf(bounds);
     case "rect":
@@ -222,6 +256,14 @@ export function anchorPointFor(a: Annotation, bounds: Bounds, handle: ResizeHand
  * from the same fixed `original`/`bounds` pair, never incrementally) stay
  * numerically stable. `handle` must be one produced by `resizeHandlesFor` for
  * this same annotation.
+ *
+ * `limits` is REQUIRED (Addendum B, 2026-08-02), read only by the magnifier
+ * branch — the same "one parameter, one kind reads it, the rest ignore it"
+ * precedent `translateAnnotation(a, dx, dy, part)` already sets. Required
+ * rather than optional-with-a-default so TypeScript forces the single real
+ * call site (`canvas.ts`'s resize branch) to supply it explicitly; a silent
+ * default would be exactly the kind of "fallback left behind" this project
+ * forbids.
  */
 export function applyResize(
   original: Annotation,
@@ -229,6 +271,7 @@ export function applyResize(
   handle: ResizeHandle,
   pointer: Point,
   shiftKey: boolean,
+  limits: MagnifierSizeLimits,
 ): Annotation {
   switch (original.kind) {
     case "rect":
@@ -241,6 +284,8 @@ export function applyResize(
       return applyTextResize(original, bounds, handle as BoxHandle, pointer);
     case "badge":
       return applyBadgeResize(original, pointer);
+    case "magnifier":
+      return applyMagnifierResize(original, handle, pointer, limits);
     case "highlight":
       return original;
   }
@@ -413,5 +458,49 @@ function applyBadgeResize(a: BadgeAnnotation, pointer: Point): BadgeAnnotation {
     MIN_BADGE_RADIUS,
     MAX_BADGE_RADIUS,
   );
+  return { ...a, radius };
+}
+
+/**
+ * magnifier: one orthogonal assignment per handle — every degree of freedom
+ * has exactly one control:
+ * - `src-move`: `from` snaps straight to the pointer, UNCLAMPED (handle
+ *   drags snap to the pointer everywhere else in this app) — this is a
+ *   user-steered edit of an already-committed, undoable annotation, so the
+ *   app's general "never clamp annotations" policy applies, unlike the
+ *   *creation* gesture's `magnifierSlideUpdate` (magnifier.ts), which does
+ *   clamp `from` (review round 2 ruling: a creation gesture must always
+ *   produce a usable loupe, never a provably-empty one). If `src-move` ever
+ *   needs clamping too, reuse magnifier.ts's `clampPointToCanvas` rather
+ *   than re-deriving it.
+ * - `src-zoom`: a single scalar radial drag from `from` sets `zoom` at fixed
+ *   `radius` — a smaller source ring reads as more magnification. `Number.
+ *   EPSILON` (not 0) as the hypot floor means a zero-distance drag can never
+ *   divide by zero; `clampZoom` absorbs the resulting huge value at its own
+ *   ceiling, so there is no separate zero-distance special case.
+ * - lens corners (nw/ne/sw/se, via `cornerHandles`): badge-style center-pinned
+ *   radius resize at FIXED zoom (more/less of the image at the same
+ *   magnification) — `at`/`zoom` never change. `lo` is the one expression
+ *   that keeps the derived source circle (`radius / zoom`) from collapsing
+ *   below `limits.minSource` as the lens shrinks at a high zoom (Addendum B,
+ *   2026-08-02).
+ */
+function applyMagnifierResize(a: MagnifierAnnotation, handle: ResizeHandle, pointer: Point, limits: MagnifierSizeLimits): MagnifierAnnotation {
+  if (handle === "src-move") {
+    return { ...a, from: { x: pointer.x, y: pointer.y } };
+  }
+  if (handle === "src-zoom") {
+    const dist = Math.max(Math.hypot(pointer.x - a.from.x, pointer.y - a.from.y), Number.EPSILON);
+    return { ...a, zoom: clampZoom(a.radius / dist, a, limits) };
+  }
+  // Only the 4 lens corners (nw/ne/sw/se, via cornerHandles) remain —
+  // resizeHandlesFor never returns any other id for a magnifier.
+  return applyMagnifierCornerResize(a, pointer, limits);
+}
+
+/** magnifier lens corner (nw/ne/sw/se): badge-style center-pinned radius resize at FIXED zoom — see applyMagnifierResize's doc comment for the `lo` floor's rationale. */
+function applyMagnifierCornerResize(a: MagnifierAnnotation, pointer: Point, limits: MagnifierSizeLimits): MagnifierAnnotation {
+  const lo = Math.max(limits.minLens, a.zoom * limits.minSource);
+  const radius = clamp(Math.max(Math.abs(pointer.x - a.at.x), Math.abs(pointer.y - a.at.y)), lo, limits.maxLens);
   return { ...a, radius };
 }

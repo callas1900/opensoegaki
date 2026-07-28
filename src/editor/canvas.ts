@@ -26,6 +26,16 @@ import { hitTest } from "./hittest";
 import { decodeClampedBitmap } from "./downscale";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
 import {
+  deriveLensSizeForSource,
+  placeLens,
+  magnifierSourceRadius,
+  defaultSourceRadius,
+  magnifierSlideUpdate,
+  magnifierSizeLimits,
+  MAGNIFIER_GAP_PX,
+  type MagnifierSizeLimits,
+} from "./magnifier";
+import {
   resizeHandlesFor,
   applyResize,
   rotateHandleFor,
@@ -54,6 +64,10 @@ const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_SLOP_PX = 24;
 /** Gap kept between the selection's marquee and the floating delete control, in CSS px (TASK-35.11). */
 const SELECTION_CONTROLS_MARGIN_PX = 8;
+/** Gap between the magnifier's source ring and its zoom readout label, in CSS px; scale-compensated at the call site. */
+const MAGNIFIER_READOUT_MARGIN_PX = 6;
+/** Magnifier zoom readout font size, in CSS px; scale-compensated at the call site. */
+const MAGNIFIER_READOUT_FONT_PX = 13;
 /** Crop corner handle draw size and grab radius, in CSS px; scale-compensated at the call site. */
 const HANDLE_DRAW_PX = 10;
 const HANDLE_HIT_PX = 12;
@@ -69,6 +83,13 @@ const TOUCH_HIT_MULTIPLIER = 2;
 const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
 /** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
 const HIGHLIGHTER_MIN_POINT_DIST_PX = 2;
+/**
+ * Floor for the stage height `applyKeyboardInset` may shrink to, in CSS px.
+ * A landscape phone plus an open keyboard can leave less room above the
+ * keyboard than the toolbar itself occupies; the image stays small but
+ * visible rather than collapsing to nothing.
+ */
+const KEYBOARD_INSET_MIN_STAGE_PX = 120;
 /** Selection marquee padding around the raw `boundsOf` box, in bitmap px (TASK-29; not scale-compensated — a fixed pixel margin regardless of zoom). Also the box the rotate knob's `rotateHandleFor` is positioned from. */
 const SELECTION_PAD_PX = 6;
 /** Rotate knob offset outside the selection marquee's north edge (its natural, "north" placement — see resize.ts's rotateHandleFor for the south/clamped fallbacks), in CSS px; scale-compensated to bitmap px at the call site. */
@@ -183,6 +204,14 @@ export class Editor {
     startPointer: Point;
     changed: boolean;
   } | null = null;
+  // Armed for the whole duration of a magnifier creation gesture (Addendum A,
+  // 2026-08-01a's slide-to-aim revision) — mirrors `move`/`resize`/
+  // `rotateDrag`'s "freeze a base at gesture start, recompute from it every
+  // frame" anti-drift discipline. `offset` is `at - from` at pointerdown;
+  // `radius`/`zoom` are captured here (not just read off the draft) so
+  // "sizing cannot change mid-gesture" is structural: `magnifierSlideUpdate`
+  // only ever reads them from this frozen object, never from the live draft.
+  private magnifierPlace: { offset: Point; radius: number; zoom: number } | null = null;
   // Crop tool state: the current region (starts as the full image), the
   // corner handle actively being dragged (if any), and the owned floating
   // ✓/✗ controls overlay + its resize-reposition handler. Never part of doc,
@@ -253,7 +282,15 @@ export class Editor {
     if (!ctx) throw new Error("2D canvas is not available");
     this.ctx = ctx;
     this.bindPointerEvents();
-    this.stageResizeObserver = new ResizeObserver(() => this.fitCanvasToStage());
+    this.stageResizeObserver = new ResizeObserver(() => {
+      this.fitCanvasToStage();
+      // An open text editor is positioned from the canvas's on-screen box, so
+      // it has to follow every refit — the soft-keyboard inset
+      // (`applyKeyboardInset`) resizes the stage *while* the editor is open,
+      // which is exactly when the input must not drift off the text it edits.
+      // No-op when no editor is open.
+      this.positionTextEditor();
+    });
     if (this.canvas.parentElement) this.stageResizeObserver.observe(this.canvas.parentElement);
   }
 
@@ -362,6 +399,8 @@ export class Editor {
     this.move = null;
     this.resize = null;
     this.rotateDrag = null;
+    this.magnifierPlace = null;
+    this.draft = null;
     this.teardownCrop();
     this.canvas.width = bitmap.width;
     this.canvas.height = bitmap.height;
@@ -406,6 +445,8 @@ export class Editor {
     this.move = null;
     this.resize = null;
     this.rotateDrag = null;
+    this.magnifierPlace = null;
+    this.draft = null;
     this.teardownCrop();
     if (snapshot.imageBitmap) {
       this.canvas.width = snapshot.imageBitmap.width;
@@ -450,8 +491,8 @@ export class Editor {
     // the DOM input overlay is its live stand-in (see `textEdit` doc comment).
     const editId = this.textEdit?.editId ?? null;
     const list = editId ? this.doc.annotations.filter((a) => a.id !== editId) : this.doc.annotations;
-    renderAnnotations(ctx, list, this.doc.images);
-    if (this.draft) renderAnnotations(ctx, [this.draft], this.doc.images);
+    renderAnnotations(ctx, list, this.doc.images, this.doc.imageBitmap);
+    if (this.draft) renderAnnotations(ctx, [this.draft], this.doc.images, this.doc.imageBitmap);
     // Selection chrome is drawn last, directly on the live canvas context only —
     // never through renderAnnotations, so it can never reach exportPng().
     const selected = this.selectedAnnotation();
@@ -533,6 +574,8 @@ export class Editor {
     this.move = null;
     this.resize = null;
     this.rotateDrag = null;
+    this.magnifierPlace = null;
+    this.draft = null;
     // history and doc.images deliberately preserved: the pushed snapshot references them.
     this.recomputeDocScale();
     this.fitCanvasToStage();
@@ -652,6 +695,8 @@ export class Editor {
     this.move = null;
     this.resize = null;
     this.rotateDrag = null;
+    this.magnifierPlace = null;
+    this.draft = null;
     // Exit crop mode to select on the newly-cropped image (setTool renders).
     // Guarded: switching tools during the await already tore crop down (and,
     // if the crop tool was re-armed for a *different* image meanwhile, that
@@ -802,10 +847,62 @@ export class Editor {
     const half = side / 2;
     ctx.lineWidth = 1.5;
     for (const handle of resizeHandlesFor(a, b)) {
-      ctx.fillStyle = "rgba(255,255,255,0.95)";
-      ctx.fillRect(handle.pos.x - half, handle.pos.y - half, side, side);
-      ctx.strokeStyle = PALETTE[0];
-      ctx.strokeRect(handle.pos.x - half, handle.pos.y - half, side, side);
+      if (handle.shape === "circle") {
+        // Magnifier's src-move/src-zoom (resize.ts): accent fill + white ring
+        // — deliberately the INVERSE of the square handles' white-fill/accent-
+        // ring styling below, so the two handle families read as unmistakably
+        // different at a glance (design note).
+        ctx.beginPath();
+        ctx.arc(handle.pos.x, handle.pos.y, half, 0, 2 * Math.PI);
+        ctx.fillStyle = PALETTE[0];
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.fillRect(handle.pos.x - half, handle.pos.y - half, side, side);
+        ctx.strokeStyle = PALETTE[0];
+        ctx.strokeRect(handle.pos.x - half, handle.pos.y - half, side, side);
+      }
+    }
+
+    if (a.kind === "magnifier") {
+      // Zoom readout (design note): selection chrome only, drawn beside the
+      // source ring — never through renderAnnotations, so it can never reach
+      // exportPng(). Two-pass text (white halo + accent fill), the same
+      // legibility trick render.ts's drawText/drawArrow use, since the ring
+      // can sit over an arbitrarily light or dark part of the image.
+      const sourceRadius = magnifierSourceRadius(a);
+      // One decimal, trailing ".0" trimmed: "2.4×", but "3×" not "3.0×".
+      const zoomDigits = a.zoom.toFixed(1);
+      const label = (zoomDigits.endsWith(".0") ? zoomDigits.slice(0, -2) : zoomDigits) + "×";
+      const fontPx = MAGNIFIER_READOUT_FONT_PX * this.cropScale();
+      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+      const textWidth = ctx.measureText(label).width;
+      const offset = MAGNIFIER_READOUT_MARGIN_PX * this.cropScale() + half;
+
+      // Natural placement: above-right (NE) of the source ring. When that
+      // would leave the canvas — the source ring sitting near the top or
+      // right edge — mirror to below-left (SW) instead: the same
+      // problem-class fix `rotateHandleFor`/`knobMargin` use for the rotate
+      // knob (try the natural spot, fall back to the opposite side). Chrome
+      // only, so this never touches exported pixels — it only keeps the
+      // on-screen readout legible.
+      const neX = a.from.x + sourceRadius * Math.SQRT1_2 + offset;
+      const neY = a.from.y - sourceRadius * Math.SQRT1_2 - offset;
+      const mirror = neX + textWidth > this.canvas.width || neY - fontPx / 2 < 0;
+      const labelPos = mirror
+        ? { x: a.from.x - sourceRadius * Math.SQRT1_2 - offset, y: a.from.y + sourceRadius * Math.SQRT1_2 + offset }
+        : { x: neX, y: neY };
+
+      ctx.textAlign = mirror ? "right" : "left";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 3;
+      ctx.strokeText(label, labelPos.x, labelPos.y);
+      ctx.fillStyle = PALETTE[0];
+      ctx.fillText(label, labelPos.x, labelPos.y);
     }
 
     if (knob) {
@@ -1160,6 +1257,20 @@ export class Editor {
   }
 
   /**
+   * The magnifier's current operability size limits (Addendum B, 2026-08-02)
+   * — display-scale dependent, so recomputed per call rather than cached
+   * (mirrors `tolerance()`/`handleHitRadius()`, which already recompute
+   * `cropScale()` per event without trouble; only a window resize mid-drag
+   * could change this, and that case is deliberately not special-cased).
+   * The one private owner of "what canvas size / scale feed
+   * `magnifierSizeLimits`" — `magnifierGeometry` (creation) and the resize
+   * branch (`onMove`) both call this instead of re-deriving it.
+   */
+  private magnifierLimits(): MagnifierSizeLimits {
+    return magnifierSizeLimits({ w: this.canvas.width, h: this.canvas.height }, this.cropScale());
+  }
+
+  /**
    * Crop/resize-handle grab radius in bitmap px, compensating for CSS
    * scaling. `pointerType` is the triggering PointerEvent's own field
    * (`"touch"`, `"mouse"`, `"pen"`, or `""` if unknown) — only `"touch"`
@@ -1180,6 +1291,9 @@ export class Editor {
    * Resize cursor for a select-tool resize handle (TASK-29). Box handles map
    * to the matching cardinal/diagonal cursor; arrow endpoints use "move" —
    * dragging either endpoint repositions a point, not a directional resize.
+   * Magnifier's `src-move` is likewise a reposition ("move"); `src-zoom` is a
+   * radial drag, so it reuses the diagonal "nwse-resize" cursor. The lens's
+   * own corners already map through the box cases above.
    */
   private cursorForResizeHandle(h: ResizeHandle): string {
     switch (h) {
@@ -1198,7 +1312,33 @@ export class Editor {
       case "from":
       case "to":
         return "move";
+      case "src-move":
+        return "move";
+      case "src-zoom":
+        return "nwse-resize";
     }
+  }
+
+  /**
+   * Derive the lens's `{at, radius, zoom}` for a magnifier being created at
+   * `from` — the single place `defaultSourceRadius`/`deriveLensSizeForSource`
+   * (S/M/L target sizing, magnifier.ts) and `placeLens` (auto-placement,
+   * magnifier.ts) are composed into one annotation-shaped result, with
+   * `magnifierLimits()` (Addendum B, 2026-08-02) computed once and threaded
+   * through both. Simplified from `magnifierGeometry(from, sourceRadius)` so
+   * `onDown` cannot forget to apply the operability floor — this is now the
+   * ONLY place `defaultSourceRadius` is called. Since Addendum A
+   * (2026-08-01a), called only from `onDown`, once per gesture: sizing and
+   * placement are frozen at pointerdown (`magnifierPlace`) and never
+   * recomputed during the slide (see `magnifierSlideUpdate`).
+   */
+  private magnifierGeometry(from: Point): { at: Point; radius: number; zoom: number } {
+    const canvasSize = { w: this.canvas.width, h: this.canvas.height };
+    const limits = this.magnifierLimits();
+    const sourceRadius = defaultSourceRadius(canvasSize, limits);
+    const { radius, zoom } = deriveLensSizeForSource(sourceRadius, this.size, canvasSize, limits);
+    const at = placeLens(from, sourceRadius, radius, canvasSize, MAGNIFIER_GAP_PX);
+    return { at, radius, zoom };
   }
 
   private onDown(p: Point, e: PointerEvent): void {
@@ -1338,6 +1478,18 @@ export class Editor {
       this.draft = { ...base, kind: "rect", a: p, b: p };
     } else if (tool === "highlight") {
       this.draft = { ...base, kind: "highlight", points: [p] };
+    } else if (tool === "magnifier") {
+      // Slide-to-aim creation (Addendum A, 2026-08-01a): pointerdown plants
+      // the source at `p` with the default radius, derives {radius, zoom}
+      // and the lens's auto-placement ONCE, then FREEZES `offset = at - from`
+      // plus `radius`/`zoom` in `magnifierPlace` for the whole gesture — the
+      // same "recompute from a fixed base, never incrementally" discipline
+      // `move`/`resize`/`rotateDrag` already use. `onMove` (below) only ever
+      // reads size/placement back from this frozen object, so a slide can
+      // never change what onDown decided.
+      const { at, radius, zoom } = this.magnifierGeometry(p);
+      this.magnifierPlace = { offset: { x: at.x - p.x, y: at.y - p.y }, radius, zoom };
+      this.draft = { ...base, kind: "magnifier", from: p, at, radius, zoom };
     }
     this.render();
   }
@@ -1377,7 +1529,7 @@ export class Editor {
       // geometry contract). Every step below is gated on `angle`, so this is
       // an exact no-op — identical code path — at angle 0.
       const localP = angle ? unrotatePoint(p, pivotOf(bounds), angle) : p;
-      let updated = applyResize(original, bounds, handle, localP, shiftKey);
+      let updated = applyResize(original, bounds, handle, localP, shiftKey, this.magnifierLimits());
       if (angle) {
         const anchorLocal = anchorPointFor(original, bounds, handle);
         const boundsAfter = boundsOf(updated, this.ctx);
@@ -1414,8 +1566,15 @@ export class Editor {
       }
       if (this.move.moved) {
         const original = this.move.original;
+        // A magnifier's body-drag moves the LENS only (`at`) — the source
+        // region moves exclusively through its own `src-move` handle
+        // (resize.ts). This is the design's one orthogonal assignment: body
+        // drag -> lens position, src-move handle -> source position; grabbing
+        // and dragging a magnified disc must never silently change what it
+        // magnifies.
+        const part = original.kind === "magnifier" ? "lens" : "all";
         this.doc.annotations = this.doc.annotations.map((a) =>
-          a.id === this.selectedId ? translateAnnotation(original, dx, dy) : a,
+          a.id === this.selectedId ? translateAnnotation(original, dx, dy, part) : a,
         );
       }
       this.canvas.style.cursor = "grabbing";
@@ -1444,6 +1603,17 @@ export class Editor {
             this.draft.points.push(p);
           }
         }
+      } else if (this.draft.kind === "magnifier") {
+        // Slide-to-aim (Addendum A): the source follows the pointer exactly
+        // (`from = p`) and the lens rides along at the FROZEN offset from
+        // `magnifierPlace` (captured once at pointerdown), clamped back
+        // on-canvas — `radius`/`zoom` are deliberately untouched here, they
+        // cannot change mid-slide. The finger occludes the source, never the
+        // lens, so the lens is the live viewfinder the user aims with.
+        const canvasSize = { w: this.canvas.width, h: this.canvas.height };
+        const { from, at } = magnifierSlideUpdate(p, this.magnifierPlace!, canvasSize);
+        this.draft.from = from;
+        this.draft.at = at;
       }
       this.render();
       return;
@@ -1539,6 +1709,34 @@ export class Editor {
     if (!this.draft) return;
     const d = this.draft;
     this.draft = null;
+    // Gesture-end choke point: `magnifierPlace`'s lifetime is "one gesture"
+    // (matching `draft`'s), not "one branch" — reset here unconditionally,
+    // regardless of `d.kind`, rather than only inside the magnifier commit
+    // branch below (round-2 review fix: the old placement left it armed
+    // whenever a DIFFERENT gesture — rotateDrag/resize/move/crop-drag —
+    // returned early above, and relied on every future branch added here
+    // remembering to reset it too). Harmless no-op for every non-magnifier
+    // kind, since only the magnifier onDown branch ever sets it.
+    this.magnifierPlace = null;
+
+    if (d.kind === "magnifier") {
+      // Addendum A (2026-08-01a): release always commits unconditionally —
+      // a tap is just the zero-length case of the same slide gesture, no
+      // separate branch — then hands off to the select tool with the new
+      // loupe already selected, so all four adjustment handles and the
+      // delete button are live with zero extra taps (the tedium the
+      // real-iPhone feedback called out). Ordering below is LOAD-BEARING:
+      // setTool("select") calls clearSelection(), which nulls selectedId and
+      // renders — setting selectedId before that call would be silently
+      // wiped, so it must be set AFTER setTool, followed by one more render
+      // to actually draw the now-selected chrome.
+      this.commit(d);
+      this.setTool("select");
+      this.selectedId = d.id;
+      this.render();
+      return;
+    }
+
     // Ignore accidental clicks that produced a zero-size shape.
     const degenerate =
       (d.kind === "arrow" && d.from.x === d.to.x && d.from.y === d.to.y) ||
@@ -1625,22 +1823,32 @@ export class Editor {
     input.addEventListener("blur", () => this.commitTextEditor());
     window.addEventListener("resize", reposition);
     input.focus();
-    // Keep the input visible above the iOS soft keyboard (TASK-35.10): an
-    // initial scroll-into-view, then re-applied on every visualViewport
-    // resize/scroll (keyboard opening/closing, or the page nudging to keep
-    // the focused field on-screen). Feature-detected and removed on
-    // commit/cancel below; a soft keyboard never triggers these events on
-    // desktop, so this is a no-op there in practice.
-    input.scrollIntoView({ block: "center" });
+    // Keep the input visible above the iOS soft keyboard (TASK-35.10 AC#3):
+    // applied once now and re-applied on every visualViewport resize/scroll
+    // (keyboard opening/closing, or iOS panning the visual viewport).
+    // Feature-detected and undone on commit/cancel below; a soft keyboard
+    // never triggers these events on desktop, so this is a no-op there in
+    // practice (see applyKeyboardInset for why it stays inert there).
     const vv = window.visualViewport;
-    if (vv) {
-      const onViewportChange = () => input.scrollIntoView({ block: "center" });
+    const stage = this.canvas.parentElement;
+    if (vv && stage) {
+      const onViewportChange = () => this.applyKeyboardInset();
       vv.addEventListener("resize", onViewportChange);
       vv.addEventListener("scroll", onViewportChange);
       clearViewportGuard = () => {
         vv.removeEventListener("resize", onViewportChange);
         vv.removeEventListener("scroll", onViewportChange);
+        // Give the stage its full height back; the ResizeObserver refits the
+        // canvas (and the badge bar's own shrink, if open, still applies —
+        // this only ever clears the inset written by applyKeyboardInset).
+        stage.style.maxHeight = "";
+        // iOS standalone-PWA quirk, same nudge as ui/badgebar.ts's
+        // restoreViewport: after the keyboard closes the layout viewport can
+        // stay panned. The app never scrolls the window itself, so this is a
+        // no-op everywhere else.
+        if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
       };
+      this.applyKeyboardInset();
     }
     // Repaint now: without this, the pre-edit annotation (or, for a brand-new
     // text, nothing) stays whatever render() last drew, and in edit mode that
@@ -1673,6 +1881,54 @@ export class Editor {
     input.style.font = fontString(fontSize * scale);
     input.style.transform = angle ? `rotate(${angle}rad)` : "";
     input.style.transformOrigin = angle ? "0 0" : "";
+  }
+
+  /**
+   * Make room for the iOS soft keyboard by SHRINKING the stage, so the open
+   * text editor's input is never hidden behind it (TASK-35.10 AC#3).
+   *
+   * Deliberately scrolls nothing. The predecessor of this method was
+   * `input.scrollIntoView({ block: "center" })`: the input is an absolutely
+   * positioned child of #stage and routinely sticks out past its padding box
+   * (a default `<input>` is ~170px wide), which made #stage scrollable — so
+   * scrollIntoView scrolled *the stage*, sliding the canvas sideways/up with
+   * no way back (#stage has `touch-action: none` while an image is loaded).
+   * That was the reported iPhone bug: tapping to enter text displaced the
+   * canvas. #stage is now `overflow: hidden` in the annotating state
+   * (styles.css), so neither this code nor WebKit's own focus-reveal can
+   * scroll it, and making room is a layout change instead, along the path
+   * the badge bar already exercises when it shrinks the stage: this writes
+   * the stage's `max-height` (its sole owner, cleared in `openTextEditor`'s
+   * `clearViewportGuard`), `stageResizeObserver` refits the canvas to the
+   * smaller box, and `positionTextEditor` follows the canvas — so the input
+   * stays glued to the text it is editing throughout.
+   *
+   * Inert without a keyboard: with none open, the visual viewport's bottom
+   * lies below the stage (the share bar occupies that strip), so the computed
+   * max-height exceeds the stage's natural height and `flex: 1` keeps it
+   * exactly where it was. Desktop therefore never changes shape.
+   */
+  private applyKeyboardInset(): void {
+    const vv = window.visualViewport;
+    const stage = this.canvas.parentElement;
+    if (!vv || !stage || !this.textEdit) return;
+    // Client-coordinate y of the keyboard's top edge: the visual viewport's
+    // bottom expressed in the layout-viewport coordinates that
+    // getBoundingClientRect returns (`offsetTop` is non-zero only while iOS
+    // pans the visual viewport, e.g. mid-keyboard-animation).
+    const keyboardTop = vv.offsetTop + vv.height;
+    // The input's overhang past the canvas's bottom edge. The canvas is
+    // refitted into the shrunk stage minus its padding, so an input anchored
+    // near the bottom of the image would still poke below the canvas by up to
+    // one line box; whatever the stage's bottom padding does not already
+    // absorb has to come out of the stage's height too.
+    const inputBottom = this.textEdit.input.getBoundingClientRect().bottom;
+    const canvasBottom = this.canvas.getBoundingClientRect().bottom;
+    const padBottom = parseFloat(getComputedStyle(stage).paddingBottom) || 0;
+    const overhang = Math.max(0, inputBottom - canvasBottom - padBottom);
+    const available = keyboardTop - stage.getBoundingClientRect().top - overhang;
+    if (!Number.isFinite(available)) return;
+    stage.style.maxHeight = `${Math.max(available, KEYBOARD_INSET_MIN_STAGE_PX)}px`;
   }
 
   /**

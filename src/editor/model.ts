@@ -6,7 +6,7 @@
 
 export type Point = { x: number; y: number };
 
-export type ToolKind = "arrow" | "rect" | "text" | "highlight" | "badge";
+export type ToolKind = "arrow" | "rect" | "text" | "highlight" | "badge" | "magnifier";
 export type Tool = ToolKind | "select" | "crop";
 
 /** Annotation kinds, including "image" — which is inserted via insertImage(), not the toolbar tool loop. */
@@ -73,13 +73,28 @@ export interface ImageAnnotation extends AnnotationBase {
   // color/strokeWidth are inherited but unused placeholders, filled from DEFAULTS at creation.
 }
 
+export interface MagnifierAnnotation extends AnnotationBase {
+  kind: "magnifier";
+  /** CENTER of the lens circle, in bitmap coords — same convention as
+   *  BadgeAnnotation's `at` (a center, not a corner). */
+  at: Point;
+  /** Lens radius, bitmap px. */
+  radius: number;
+  /** Magnification factor (> 1). */
+  zoom: number;
+  /** CENTER of the source region, in bitmap coords. The source region is
+   *  DERIVED: a circle of radius `radius / zoom` centered here. */
+  from: Point;
+}
+
 export type Annotation =
   | ArrowAnnotation
   | RectAnnotation
   | TextAnnotation
   | HighlighterAnnotation
   | BadgeAnnotation
-  | ImageAnnotation;
+  | ImageAnnotation
+  | MagnifierAnnotation;
 
 /** Editor document: background bitmap + ordered annotation list. */
 export interface Doc {
@@ -110,6 +125,12 @@ export const FONT_PRESETS: Record<SizeName, number> = { S: 18, M: 28, L: 44 };
 export const HIGHLIGHTER_WIDTH_SCALE = 3;
 export const BADGE_RADIUS_PRESETS: Record<SizeName, number> = { S: 14, M: 20, L: 28 };
 
+// Target lens DIAMETER as a fraction of the canvas's long side, keyed by the
+// S/M/L size picker. Nudged down from the 25/33/45% a rectangular inset would
+// use: a disc is visually dominant and must coexist with its own source
+// region and connector on the same canvas. See deriveLensForSource (magnifier.ts).
+export const MAGNIFIER_LENS_FRACTION_PRESETS: Record<SizeName, number> = { S: 0.22, M: 0.30, L: 0.40 };
+
 // Adaptive annotation sizing (TASK-35.16, web-only): stroke/radius/font
 // presets were tuned for a typical desktop capture's long side; on an
 // imported photo many times larger (an iPhone's own 12 MP library shot),
@@ -138,8 +159,15 @@ export function nextId(): string {
   return `a${Date.now().toString(36)}${(counter++).toString(36)}`;
 }
 
-/** Return a new annotation shifted by (dx, dy); never mutates the input. */
-export function translateAnnotation(a: Annotation, dx: number, dy: number): Annotation {
+/**
+ * Return a new annotation shifted by (dx, dy); never mutates the input.
+ *
+ * `part` only matters for "magnifier": "all" (the default, used by crop /
+ * resize re-anchor / text re-anchor — all rigid moves) shifts both `from` and
+ * `at`; "lens" shifts only `at`, i.e. dragging the lens body moves the lens
+ * without changing what it magnifies. Every other kind ignores `part`.
+ */
+export function translateAnnotation(a: Annotation, dx: number, dy: number, part: "all" | "lens" = "all"): Annotation {
   switch (a.kind) {
     case "arrow":
       return {
@@ -161,6 +189,13 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number): Anno
       return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
     case "image":
       return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+    case "magnifier":
+      if (part === "lens") return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+      return {
+        ...a,
+        from: { x: a.from.x + dx, y: a.from.y + dy },
+        at: { x: a.at.x + dx, y: a.at.y + dy },
+      };
   }
 }
 

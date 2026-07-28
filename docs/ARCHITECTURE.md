@@ -238,6 +238,7 @@ to `exporter.ts` itself.
 | rect, image, text, badge | Yes | Standard select-tool rotate-knob affordance |
 | arrow | No | Direction is already first-class in `from`/`to`; an `angle` field would be a second, redundant representation of the same fact, and the existing `to`-endpoint drag with Shift-45° snap (see "Resizing selected annotations") already rotates it |
 | highlight | No | Freehand marker stroke; move/delete-only, the same rationale as its TASK-29 resize exemption |
+| magnifier | No | Correctness, not taste: `ctx.drawImage`'s SOURCE rectangle is always axis-aligned in image space and unaffected by the ctx transform, while the source ring drawn inside `renderAnnotations`'s generic rotate transform WOULD swing around the lens's pivot — pointing at a region the loupe does not actually sample, breaking the annotation's entire spatial claim. (A circle is rotationally symmetric anyway, so the affordance would be visually meaningless even where it were safe.) **TASK-42 hazard:** a future multi-select group rotation must treat magnifier as translation-only — rigidly rotate `from`/`at`, never set `angle` — setting `angle` on a magnifier reproduces the broken state above |
 
 Both exempt kinds still **render** rotated if given an angle (the generic
 transform doesn't check `canRotate`) — only the select-tool affordance is
@@ -406,6 +407,297 @@ is handled generically too, see "Resizing selected annotations" below
 encode each image annotation's pixels alongside its id — the natural approach
 is one PNG blob per id, keyed the same way `Doc.images` is keyed today.
 
+## Magnifier (loupe)
+
+A `"magnifier"` annotation (`MagnifierAnnotation` in `model.ts`, TASK-46) puts
+a wide-context screenshot and a zoomed-in detail in one image: a circular
+**source** region on the background and a magnified **lens** disc drawn
+elsewhere on the same canvas, joined by a connector — so the recipient sees
+both the context and the detail without a second cropped image. Design
+history: `docs/design/2026-08-01-magnifier-loupe.md` (original design),
+Addendum A `docs/design/2026-08-01a-magnifier-creation-revision.md`
+(touch-first slide-to-aim creation gesture), Addendum B
+`docs/design/2026-08-02-magnifier-connector-and-size-limits.md`
+(single-segment connector; operability-based size limits), and Addendum C
+`docs/design/2026-08-02a-magnifier-tapered-connector.md` (the connector
+widens toward the lens) — each addendum's header cross-links the note(s) it
+partially supersedes or overrides.
+
+**Data model and the derived-source rule.** The lens (`at`: center, `radius`)
+and `zoom` are stored and authoritative, along with `from` (the source
+region's center); the source region itself is **derived**, never stored: a
+circle of radius `radius / zoom` centered on `from`. With a circle there is
+exactly one size scalar per object, so uniform magnification is
+structural — there is no representable state where the magnified content is
+distorted, and no invariant to maintain across call sites (the same argument
+`rotate.ts` already makes for arrow not having a redundant `angle`). The lens
+is what the user directly frames and drags, so keeping it authoritative lets
+it reuse the existing badge-shaped resize/hit-test machinery almost
+verbatim — deriving the lens from the source instead would fight that
+machinery and make "resize the lens at constant zoom" unexpressible. All of
+this derived geometry — `magnifierSourceRadius`, `magnifierSourceRect`,
+`magnifierLensRect`, the sample-rect clamp, the fan-and-arc connector
+construction, the operability size limits, auto-placement, and the S/M/L size
+derivation — lives in one pure leaf module, `src/editor/magnifier.ts` (imports
+only `model.ts`/`bounds.ts` types), so no other file re-implements "where does
+the source circle sit."
+
+**Circle marker, not the sampled square.** `ctx.drawImage` samples an
+axis-aligned rectangle internally (the source circle's bounding square), but
+the only marker actually drawn on the image is the **source circle**: the
+square's corners are clipped away by the lens's circular clip and never
+appear in the output, so drawing the square would over-claim what the loupe
+shows. The circular marker also turns the connector into a clean
+circle-to-circle construction instead of an ugly circle↔rect one.
+
+**Connector: an aperture-anchored fan that ends in an arc flush with the lens
+rim (Addendum C, 2026-08-02a §8 — overrides Addendum C's own first cut,
+which in turn overrode Addendum B's stroked segment).** Addendum B's single
+rim-to-rim line fixed the original "busy cone" complaint; Addendum C's first
+cut turned that into a flat-ended, weight-anchored tapered quad (narrow at
+the source, `Math.max(markerStroke, a.strokeWidth)` at the lens) after
+real-device feedback asked the connector to read heavier and widen toward
+the lens. A follow-up device check asked for the taper to be **much more
+extreme** — enough that a stroke-weight ceiling could never deliver it — so
+§8 changes what the lens end is anchored to: instead of a border weight, it
+is an **aperture** of the lens itself. `connectorShape(c1, r1, c2, r2, w1,
+w2)` still builds on the same trimmed rim-to-rim axis (`p1`, `n`) Addendum B
+derived, but now returns `{source: [p1 + n·w1/2, p1 − n·w1/2], lens: {center,
+radius, startAngle, endAngle, counterclockwise}}`: the source end is an
+unchanged straight edge at `w1 = markerStroke`, while the lens end is an ARC
+along the lens's own rim, spanning the angle `θ = asin(w2 / (2·r2))` on
+either side of the axis. Because `w2` (`render.ts`'s
+`MAGNIFIER_CONNECTOR_FAN_RATIO × a.radius`, `FAN_RATIO = 0.6`, floored by the
+stroke weights so the taper direction can't invert) scales with the lens
+radius itself, `θ` is a FIXED angle — **17.46°** (a ~35° mouth) — at every
+lens size, document scale, and display scale: an aperture is the right unit
+for a beam, where a stroke weight would read wide on a small lens and like a
+pinstripe on a large one. A GEOMETRIC domain bound,
+`MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO` (`magnifier.ts`, `1.0`, a
+different owner than the editorial `FAN_RATIO`), caps `w2` at `r2` so
+`asin`'s argument never exceeds `0.5` and the arc stays well under a
+semicircle even when a heavy `strokeWidth` would otherwise ask for more than
+the lens supports. The lens end HAD to become an arc (not stay flat, unlike
+the source end): a flat end's sag away from the true rim scales with the end
+width itself once that width is aperture-anchored (`r2·(1 − sqrt(1 −
+FAN_RATIO²/4)) ≈ 0.046·r2`) — sub-pixel on a phone-sized lens but tens of
+pixels on a large desktop-capture lens, a real and scale-dependent gap the
+old stroke-weight-anchored end never had to worry about; an arc has zero sag
+by construction at every size. Painted two-pass like the rest of the
+family — `stroke(path)` in `OUTLINE` at `lineWidth = 4` (the house halo
+constant, applied to the shape's own boundary; `stroke()` follows an arc
+exactly as it follows a line, so the halo wraps the arc too), then
+`fill(path)` in `a.color` — under both rings, unchanged draw order. Coverage
+of the two ends differs in kind, not just degree: the flat source end is
+still covered by the source ring's `≥ 2.5px` band overshooting a 2px flat
+end by construction (same argument as before, including for an inherited
+miter join, which bisects radially inward); the lens end has no corner to
+have a join at all — the arc IS the rim, so its two junctions with the
+straight sides sit exactly on the lens border's own band regardless of join
+style. `ctx.lineJoin` is still never set. The suppression guard
+(`d < r1 + r2 + MAGNIFIER_CONNECTOR_MIN_GAP_PX` ⇒ no connector) is unchanged
+and stays editorial, not numerical.
+
+**Rendering seam: `background` is `renderAnnotations`'s required 4th
+parameter.** `render.ts`'s `renderAnnotations(ctx, list, images, background:
+ImageBitmap | null)` and `drawOne` both take it; `canvas.ts`'s `render()`
+(both the list call and the draft call) and `exporter.ts` pass
+`doc.imageBitmap`. It is required, not optional, so TypeScript forces every
+call site to supply it in the same commit rather than silently rendering a
+magnifier with nothing inside. Named `background`, not `source` — `source`
+would collide with `MagnifierAnnotation.from`/`magnifierSourceRect`'s own
+vocabulary and with `drawImage`'s own source rectangle.
+
+**Live sampling only — `doc.imageBitmap`, never other annotations, never
+`ctx.canvas`.** The loupe samples the background bitmap directly at draw
+time; it never bakes a copy into `Doc.images` the way inserted images do.
+Consequences: a later annotation drawn over the detail does not appear
+magnified inside the lens (ordinary list draw order — a later annotation
+paints over an earlier one, same as everywhere else); a crop (or its undo) is
+picked up for free, since the loupe always reads the *current*
+`doc.imageBitmap`; and there is no second "where does this pixel data come
+from" cache that can go stale, unlike the documented `Doc.images` monotonic-
+cache wart above.
+
+**Crop behaviour.** `applyCrop` translates every annotation by `-origin` via
+`translateAnnotation`, which for a magnifier moves **both** `from` and `at`
+(the default `part: "all"`) — translate-and-keep, exactly like every other
+kind, fully undoable. If the source region ends up partly or fully outside
+the new background, `clampSampleRect` intersects the sample square with the
+bitmap rect and clips the destination square by the same proportion — the
+lens shows only the in-bounds slice (or nothing, if fully outside), while the
+source ring and connector still draw so the user can see the loupe and drag
+it back. Nothing is auto-deleted or clamped into the image, consistent with
+the crop policy documented above.
+
+**Selection & the one orthogonal handle assignment.**
+
+| Gesture | Effect | Field changed |
+| --- | --- | --- |
+| Drag the lens body | Moves the lens only | `at` |
+| Drag a lens corner handle (existing `nw`/`ne`/`sw`/`se`, on the lens's bounding square) | Resizes the lens at fixed zoom, center-pinned | `radius` |
+| Drag `src-move` (new round handle at `from`) | Moves the source region | `from` |
+| Drag `src-zoom` (new round handle at 45° on the source rim) | Changes zoom at fixed lens radius | `zoom` |
+
+Every degree of freedom has exactly one control, and every control has
+exactly one meaning — grabbing and dragging a magnified disc must never
+silently change what it magnifies. `canvas.ts`'s select-tool move branch is
+the only caller that passes `translateAnnotation(a, dx, dy, "lens")`; crop,
+resize re-anchor, and text re-anchor keep the default `"all"`. `resize.ts`
+adds two new `ResizeHandle` ids (`"src-move"`, listed first in
+`resizeHandlesFor` so it wins exact ties in `nearestHandle`; `"src-zoom"`)
+and an optional `HandleSpec.shape?: "square" | "circle"` so `canvas.ts`'s
+`drawSelectionOverlay` can draw the two round source handles (accent fill +
+white ring) visibly distinct from the square box/corner handles (white fill
++ accent ring) used everywhere else. A small `"2.4×"` zoom readout (one
+decimal, trailing `.0` trimmed) is drawn beside the source ring in
+`drawSelectionOverlay` only — selection chrome, never exported.
+
+**Creation: slide-to-aim, release to confirm (Addendum A, 2026-08-01a —
+revised after real-iPhone feedback on the original radial-drag gesture).**
+The original design's radial drag (down = source center, drag distance =
+source radius) made every finger movement a zoom change, and put the user's
+finger on top of the very detail being magnified — painful on a touchscreen.
+The revised gesture separates *aiming* from *sizing*:
+
+1. **`pointerdown`** plants the source circle at the pointer with the
+   **default source radius** (`defaultSourceRadius`, long-side-based — see
+   below), derives `{radius, zoom}` **once** via `deriveLensSizeForSource`
+   and places the lens **once** via `placeLens`, then **freezes**
+   `offset = at - from` plus `radius`/`zoom` into a new gesture-state field,
+   `canvas.ts`'s `magnifierPlace` — mirroring the "recompute from a fixed
+   base every frame, never incrementally" anti-drift discipline `move`/
+   `resize`/`rotateDrag` already use.
+2. **`pointermove`** sets `from = pointer` and `at = clampLensCenter(pointer
+   + offset, radius, canvasSize)` (`magnifierSlideUpdate`, magnifier.ts) —
+   **`radius`/`zoom` never change** during the slide; the lens rides
+   alongside the finger at a constant offset, showing live magnified
+   content. The finger occludes the source, never the lens, so the lens
+   becomes the live viewfinder the user aims with — the whole fix for the
+   "dragging changes the zoom" pain point. Re-running `placeLens` every
+   frame instead of freezing the offset was considered and rejected: it
+   would flip the lens between sides (E→W) mid-slide as the source
+   approaches an edge, which is jarring and moves the very thing being read.
+3. **`pointerup`** commits **unconditionally** — a tap is just the
+   zero-length case of the same gesture, no separate branch or threshold —
+   then **auto-selects the new loupe and switches to the select tool** (see
+   below). `Ctrl+Z`/`#undo` is the safety net; there is no in-gesture cancel,
+   consistent with `clearDocument`'s stance.
+
+**Auto-select on commit — the magnifier's one exception to "new annotations
+are not auto-selected" (see "Toolbar" below).** On `pointerup`, `canvas.ts`
+commits the annotation, then calls `setTool("select")`, then sets
+`selectedId` to the new annotation's id, then renders. **This order is
+load-bearing:** `setTool` calls `clearSelection()` internally (which nulls
+`selectedId` and renders), so `selectedId` must be assigned *after*
+`setTool` returns or the assignment is silently wiped. The precedent for a
+compound tool handing off to the select tool on completion already exists —
+`applyCrop()`/`cancelCrop()` both exit via `setTool("select")` (TASK-40); the
+magnifier is the other compound object (lens + source) whose halves almost
+always need immediate adjustment, so all four handles and the floating
+delete button are live with zero extra taps. Multi-loupe workflows cost
+exactly one extra tap (re-select the magnifier tool) instead of the
+three-tap round trip the non-auto-selecting version required for *every*
+loupe.
+
+**Default source radius: long-side-based, not short-side.** Now that the
+slide no longer sets the source radius, `defaultSourceRadius` is the *sole*
+determinant of creation-time zoom for a given S/M/L preset:
+`min(MAGNIFIER_SOURCE_RADIUS_FRACTION * longSide, 0.15 * shortSide)`. Since
+`deriveLensSizeForSource`'s own `targetRadius` is long-side-driven for any
+aspect ratio up to 2.5:1, a long-side-based default makes the creation zoom
+for a given preset **constant across aspect ratios** (~1.8×/2.5×/3.3× for
+S/M/L) instead of swinging with the image's aspect ratio the way a
+short-side-based default did (3.3×-5.4× for the same "M" across a 4:3 photo
+vs. a phone screenshot). The `0.15 * shortSide` term guards extreme
+panoramas beyond that 2.5:1 point; past it, `deriveLensSizeForSource`'s own
+cap and two-pass re-derivation take over unchanged.
+
+**Deleted, not kept: the old tap-vs-drag threshold.** The revised gesture
+has no tap-vs-drag branch at all, so the pre-addendum `isMagnifierTapTravel`,
+`buildTapMagnifier` and `MAGNIFIER_TAP_SLOP_PX` have no consumers left and
+were deleted outright — the project's TASK-38 rule that a superseded
+approach is deleted, not left as a dead "fallback," applies here too.
+`MAGNIFIER_TAP_SOURCE_RADIUS_FRACTION` survives, renamed to
+`MAGNIFIER_SOURCE_RADIUS_FRACTION`, as the sole creation-time source-radius
+coefficient (see `defaultSourceRadius` above).
+
+**Constants and their homes.** Most magnifier constants live in
+`magnifier.ts` (`MIN`/`MAX_MAGNIFIER_ZOOM`, `MIN_MAGNIFIER_SOURCE_RADIUS_PX`,
+`MAGNIFIER_SOURCE_RADIUS_FRACTION`, `MAGNIFIER_GAP_PX`,
+`MAGNIFIER_CONNECTOR_MIN_GAP_PX`, the Addendum B operability-limit constants
+below, and Addendum C's `MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO`);
+`MAGNIFIER_LENS_FRACTION_PRESETS` (S/M/L target lens diameter as a fraction
+of the canvas's long side) lives in `model.ts`, next to the other size
+presets. **Deleted (Addendum B, 2026-08-02):** `MIN_MAGNIFIER_RADIUS` (12
+bitmap px) and `MAX_MAGNIFIER_RADIUS` (4096 bitmap px) — the original design
+note's deviation note about their living in `magnifier.ts` rather than
+`resize.ts` (import-boundary reasons) is now moot, since both constants are
+gone outright, replaced by the canvas/scale-relative `magnifierSizeLimits`
+below. `MAGNIFIER_SOURCE_STROKE_RATIO` is renamed
+`MAGNIFIER_MARKER_STROKE_RATIO` (same value, `0.6`); as of Addendum C
+(2026-08-02a) it governs the source ring and the connector's **narrow**
+(source) end only — the connector's wide (lens) end instead tracks
+`MAGNIFIER_CONNECTOR_FAN_RATIO × a.radius` (see the connector paragraph
+above). Still exported from `render.ts` — the module that actually draws the
+ring — and imported by `hittest.ts`, so the ring's hit-test band always
+matches the weight it's actually drawn at (the connector itself stays
+deliberately not hit-testable): one owner, two consumers, no drift between
+what's drawn and what's clickable. `MAGNIFIER_CONNECTOR_FAN_RATIO` (`0.6`,
+`render.ts`) and `MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO` (`1.0`,
+`magnifier.ts`) are deliberately two different constants in two different
+files even though both bound the same `w2` value: the first is the
+EDITORIAL aperture the connector aims for, the second is the GEOMETRIC
+domain bound `connectorShape`'s own `asin` math requires — neither is
+derivable from the other, so neither owns the other.
+
+`clampLensCenter` (magnifier.ts, Addendum A) is the one owner of "keep the
+lens fully on canvas": `placeLens`'s clamp-fallback (no candidate direction
+fit) and `magnifierSlideUpdate`'s per-frame clamp both call it instead of
+re-deriving the same `[R, W-R] x [R, H-R]` clamp independently.
+
+**Operability limits (Addendum B, 2026-08-02).** Real-iPhone feedback: a
+source ring shrunk near its old 2-bitmap-px sampling floor becomes smaller
+than its own two handles (`src-move`/`src-zoom`), so the loupe becomes
+practically uneditable — worse on a large photo shown small on a phone, where
+even a modest bitmap-px floor is a sub-3-CSS-px target. The fix follows the
+principle this codebase already uses for every other operability threshold
+(`BASE_TOL_PX`, `HANDLE_HIT_PX`, `MAGNIFIER_READOUT_*`): **minima are CSS px,
+scale-compensated at the call site with `canvas.ts`'s `cropScale()`
+(finger-relative); maxima stay canvas-relative (image-relative)** — a thing
+is "too small" relative to a fingertip, "too big" relative to the picture it
+sits on. `magnifierSizeLimits(canvasSize, scale)` (magnifier.ts) is the one
+owner of the resulting three bounds (`minSource`, `minLens`, `maxLens`);
+`defaultSourceRadius`, `deriveLensSizeForSource`, `clampZoom` (magnifier.ts)
+and every resize enforcement site (`resize.ts`'s `applyResize`, now taking a
+required `limits: MagnifierSizeLimits` 6th parameter — read only by the
+magnifier branch) consult it instead of the old fixed constants.
+`MIN_MAGNIFIER_SOURCE_RADIUS_PX` (2 bitmap px) survives as an absolute
+backstop beneath the CSS-scaled floor, guaranteeing `minSource > 0` even for
+a degenerate/zero-sized canvas (`clampZoom` divides by it).
+
+One UI-facing consequence worth stating plainly: **at a high zoom the lens
+cannot be shrunk past `zoom * minSource` — lower the zoom before shrinking
+the lens.** A tiny lens at high zoom is exactly the ungrabbable-source
+complaint from the other end, so the corner-resize floor rises with zoom
+instead of letting the derived source collapse under it.
+
+**Clamps are creation/edit-time behaviour only; nothing mutates stored
+data.** Loading, opening, or simply rendering a document never runs these
+clamps — an old loupe with a source ring below the current minima renders
+and exports exactly as saved, and only snaps into range the next time a
+corner or the `src-zoom` handle is actually dragged, same as every other
+tool's clamp. This matters more here than elsewhere because the minima are
+*display-scale dependent*: the identical annotation is "in range" in a wide
+desktop window and "below range" once the same document is opened small on a
+phone — intentional (the floors track the current finger-to-pixel ratio),
+never destructive, and documented in `magnifier.ts`'s module doc comment so
+it doesn't read as a bug later.
+
+**Performance.** One extra `drawImage` per loupe per frame, on top of the
+full-background redraw `render()` already performs every frame — the same
+cost class as any other live-preview draft; no offscreen caching is done.
+
 ## IPC contract
 
 | Direction | Name | Payload | Purpose |
@@ -430,16 +722,25 @@ and introduces no IPC changes — including its v2 handle-based/mouse-only-apply
 revision, which is pure `src/` UI/interaction rework with no Rust or IPC
 surface touched. Inserting images as annotations (above) adds the two
 commands in the table above, plus the `clipboard-manager:allow-read-image`
-capability for the Ctrl+Shift+V clipboard-image path.
+capability for the Ctrl+Shift+V clipboard-image path. The magnifier/loupe
+annotation (TASK-46, below) is likewise pure `src/`: no Rust, no new Tauri
+command, no new capability — it only threads a required 4th parameter
+(`background`) through `renderAnnotations`, extends `translateAnnotation`
+with an optional `part` argument, and adds two new resize-handle ids.
 
-**Import boundary (TASK-41 addition):** `exporter.ts`'s transitive import
-graph is, and must remain, exactly `exporter → render → {bounds, rotate} →
-model` — `bounds.ts` and `rotate.ts` are pure geometry/math leaves with no
-selection-chrome knowledge, so they are safe additions to that graph.
-`exporter.ts` must never reach `hittest.ts`, `resize.ts`, or `crop.ts`,
-directly or transitively — that boundary is the mechanical guarantee that
-selection/crop/resize/rotate *chrome* (marquees, handles, knobs, dimming)
-can never be rasterized into an exported or copied image.
+**Import boundary (TASK-41 addition, extended by TASK-46):** `exporter.ts`'s
+transitive import graph is, and must remain, exactly `exporter → render →
+{bounds, rotate, magnifier} → model` — `bounds.ts`, `rotate.ts` and
+`magnifier.ts` are pure geometry/math leaves with no selection-chrome
+knowledge, so they are safe additions to that graph. `exporter.ts` must never
+reach `hittest.ts`, `resize.ts`, or `crop.ts`, directly or transitively —
+that boundary is the mechanical guarantee that selection/crop/resize/rotate
+*chrome* (marquees, handles, knobs, dimming) can never be rasterized into an
+exported or copied image. `magnifier.ts` itself must never import
+`hittest.ts`/`resize.ts`/`crop.ts` either, even though it sits below
+`render.ts` — `resize.ts` and `hittest.ts` instead import FROM `magnifier.ts`
+(its derived-geometry functions and the `MagnifierSizeLimits` type/
+`magnifierSizeLimits` function), never the other way around.
 
 ## Keyboard shortcuts
 
@@ -513,7 +814,11 @@ The toolbar's first *tool* button is **Select** (`V`), an opt-in tool alongside 
 draw tools (arrow/rect/text, default). Selecting an annotation shows a dashed
 marquee and allows drag-to-move or `Del`/`Backspace` to remove it (see
 "Selection & hit-testing" above); switching tools, `Esc`, or clicking empty canvas
-clears the selection. New annotations are not auto-selected after drawing.
+clears the selection. New annotations are not auto-selected after drawing —
+**except the magnifier** (Addendum A, 2026-08-01a): a loupe is a compound
+object whose two halves (lens and source) almost always need immediate
+adjustment, so on commit it is auto-selected and the active tool switches to
+Select (see "Magnifier (loupe)" below for the full rationale).
 
 The **Text** tool opens an in-canvas `<input>` overlay at the click point instead
 of the former blocking `window.prompt`. The overlay is DOM-only — appended to

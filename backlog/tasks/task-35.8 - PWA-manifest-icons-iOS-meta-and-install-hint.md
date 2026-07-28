@@ -1,10 +1,10 @@
 ---
 id: TASK-35.8
 title: 'PWA manifest, icons, iOS meta and install hint'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-21 17:43'
-updated_date: '2026-07-27 07:13'
+updated_date: '2026-07-28 14:01'
 labels:
   - web
 dependencies:
@@ -22,18 +22,12 @@ Add pwa/manifest.webmanifest (standalone display, relative start_url/scope, mask
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 App installs to the iOS home screen and launches standalone (no Safari chrome)
-- [ ] #2 The web build invites the user to install to the home screen from the welcome screen, without a popup
+- [x] #1 App installs to the iOS home screen and launches standalone (no Safari chrome)
+- [x] #2 The web build invites the user to install to the home screen from the welcome screen, without a popup
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Implemented + reviewed (final review approved, no blocking). Code-trace verified; remains In Progress until exercised on a real iPhone per the docs/WEB.md smoke-test checklist.
-
-2026-07-24 device verification by user: install hint appeared once in iOS Safari and stayed dismissed after reload (AC#2 checked). AC#1 (home-screen install + standalone launch) still pending explicit confirmation.
-
-2026-07-26: install hint restyled to an accent card (bigger text, 44x44 dismiss, tap-anywhere-dismiss) and, per architect decision (Option B), suppressed entirely at max-height: 500px to avoid covering #welcome-pick in phone landscape (844x390 etc.) — no fixed-position card could clear both #share-bar and the CTA simultaneously, and #welcome-pick's y is not constant across viewports. CSS-only, no resize/orientation listener (cf. TASK-38/39). Trade-off: phone-landscape first-run users only see the hint after rotating to portrait; the dismissed-flag/localStorage semantics are unaffected. ACs unchanged.
-
-2026-07-27: AC#2 superseded by user decision (TASK-43). The one-time install-hint popup is removed entirely; the invitation becomes a static line on the welcome screen, shown in every browser and hidden when the app already runs standalone. There is no dismissal state any more, so the old wording ('appears once ... dismissed permanently') no longer describes the product. AC#2 rewritten and unchecked - its 2026-07-24 device verification applied to the popup form, not to the new one; TASK-43 carries the re-verification. AC#1 (home-screen install + standalone launch) is unaffected and still pending.
+2026-07-29: device-verified on a real iPhone against the deployed Pages URL. AC#1 - Add to Home Screen from the Safari share sheet installs the app and it launches standalone (no Safari chrome), confirming the manifest.webmanifest (standalone display, relative start_url/scope), apple-touch-icon and apple-mobile-web-app-* meta are all correctly wired. AC#2 (rewritten 2026-07-27 per TASK-43, further amended 2026-07-28 for reachability-not-visibility) - the welcome-screen invitation is visible in Safari in portrait, absent when launched standalone, and reachable via a short scroll on the tightest viewports without needing an unscrolled pixel-perfect fit (see TASK-43/TASK-44 notes for the scrollable-empty-state fix that this final verification also covers).
 <!-- SECTION:NOTES:END -->

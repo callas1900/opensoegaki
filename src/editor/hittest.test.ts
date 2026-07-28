@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { hitTest } from "./hittest";
-import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation, Annotation } from "./model";
+import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation, MagnifierAnnotation, Annotation } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { pivotOfAnnotation, rotatePoint } from "./rotate";
 
@@ -33,6 +33,16 @@ function badge(at: { x: number; y: number }, radius = 20): BadgeAnnotation {
 
 function image(at: { x: number; y: number }, width: number, height: number): ImageAnnotation {
   return { id: "image1", kind: "image", color: "#000000", strokeWidth: 1, at, width, height };
+}
+
+function magnifier(
+  at: { x: number; y: number },
+  radius: number,
+  from: { x: number; y: number },
+  zoom: number,
+  strokeWidth = 6,
+): MagnifierAnnotation {
+  return { id: "magnifier1", kind: "magnifier", color: "#ED107B", strokeWidth, at, radius, zoom, from };
 }
 
 describe("hitTest arrow", () => {
@@ -197,6 +207,35 @@ describe("hitTest with rotation", () => {
     const r2: RectAnnotation = { ...r1, angle: 0 };
     expect(hitTest([r1], { x: 0, y: 50 }, measure, 5)).toBe(r1);
     expect(hitTest([r2], { x: 0, y: 50 }, measure, 5)).toBe(r2);
+  });
+});
+
+// sourceRadius = radius/zoom = 60/3 = 20; sourceStroke = max(1, 6*0.6) = 3.6;
+// ring hit band = tolerance + sourceStroke/2 = 5 + 1.8 = 6.8.
+describe("hitTest magnifier", () => {
+  it("the lens interior (a filled circle) hits", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    expect(hitTest([m], { x: 200, y: 150 }, measure, 5)).toBe(m);
+    expect(hitTest([m], { x: 200 + 64.9, y: 150 }, measure, 5)).toBe(m); // just inside radius + tolerance
+  });
+
+  it("the source circle's hollow interior does NOT hit (it must not swallow clicks meant for what's underneath)", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    // Distance 5 from `from`, well short of sourceRadius (20) minus the ring band (6.8).
+    expect(hitTest([m], { x: 55, y: 50 }, measure, 5)).toBeNull();
+    // The exact center of the source circle.
+    expect(hitTest([m], { x: 50, y: 50 }, measure, 5)).toBeNull();
+  });
+
+  it("the source ring itself hits", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    expect(hitTest([m], { x: 50 + 20, y: 50 }, measure, 5)).toBe(m); // exactly on the ring
+    expect(hitTest([m], { x: 50 + 20 + 6.7, y: 50 }, measure, 5)).toBe(m); // just inside the band
+  });
+
+  it("a point well outside both the lens and the source ring band misses", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    expect(hitTest([m], { x: 500, y: 500 }, measure, 5)).toBeNull();
   });
 });
 

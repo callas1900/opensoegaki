@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { boundsOf } from "./bounds";
-import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation } from "./model";
+import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, MagnifierAnnotation } from "./model";
 
 // Trivial fake 2D context: only `font` (settable) and `measureText` are used
 // by boundsOf's text branch, same fixture as hittest.test.ts/resize.test.ts.
@@ -27,6 +27,10 @@ function highlight(points: { x: number; y: number }[], strokeWidth = 6): Highlig
 
 function badge(at: { x: number; y: number }, radius = 20): BadgeAnnotation {
   return { id: "badge1", kind: "badge", color: "#ED107B", strokeWidth: 6, at, number: 1, radius };
+}
+
+function magnifier(at: { x: number; y: number }, radius = 40, from = { x: 0, y: 0 }, zoom = 3): MagnifierAnnotation {
+  return { id: "magnifier1", kind: "magnifier", color: "#ED107B", strokeWidth: 6, at, radius, zoom, from };
 }
 
 describe("boundsOf", () => {
@@ -61,5 +65,16 @@ describe("boundsOf", () => {
   it("badge: bounding box centered on `at` with side 2*radius", () => {
     const b = badge({ x: 50, y: 50 }, 20);
     expect(boundsOf(b, measure)).toEqual({ x: 30, y: 30, w: 40, h: 40 });
+  });
+
+  it("magnifier: bounding box is the LENS circle's bounding square, centered on `at` with side 2*radius — the source circle plays no part", () => {
+    const m = magnifier({ x: 100, y: 80 }, 40, { x: 900, y: 900 }, 5);
+    expect(boundsOf(m, measure)).toEqual({ x: 60, y: 40, w: 80, h: 80 });
+  });
+
+  it("magnifier: bounds are unaffected by `from`/`zoom` (the source circle is a satellite, not part of these bounds)", () => {
+    const near = magnifier({ x: 100, y: 80 }, 40, { x: 110, y: 90 }, 5);
+    const far = magnifier({ x: 100, y: 80 }, 40, { x: -5000, y: 5000 }, 1.5);
+    expect(boundsOf(near, measure)).toEqual(boundsOf(far, measure));
   });
 });

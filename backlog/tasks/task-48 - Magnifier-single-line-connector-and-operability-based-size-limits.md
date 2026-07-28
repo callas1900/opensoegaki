@@ -1,0 +1,37 @@
+---
+id: TASK-48
+title: 'Magnifier: single-line connector and operability-based size limits'
+status: Done
+assignee: []
+created_date: '2026-08-02 03:14'
+updated_date: '2026-08-02 13:38'
+labels: []
+dependencies: []
+ordinal: 65000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Real-iPhone feedback (2026-08-02): replace the two tangent connector segments with a single rim-to-rim line, and clamp lens/source circle sizes to a finger-operable range. Design: docs/design/2026-08-02-magnifier-connector-and-size-limits.md (Addendum B).
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [x] #1 The connector is exactly one tapered fan along the center-to-center line — a flat end edge centered on the source rim, an arc end lying on the lens rim — and is suppressed when the circles overlap or nearly touch (unchanged guard d < r1 + r2 + MAGNIFIER_CONNECTOR_MIN_GAP_PX). (Amended per Addendum C, 2026-08-02 — was a stroked segment, then a flat-ended quad; see also §8.)
+- [x] #2 The connector widens toward the lens: its width is the source ring's marker weight at the source end and MAGNIFIER_CONNECTOR_FAN_RATIO x lens radius (floored by the stroke weights, capped at the lens radius) at the lens end, whose edge is an arc along the lens rim so it is flush with the border at any size. It is painted in the house two-pass style (white OUTLINE stroke at lineWidth 4 on the closed path, then an a.color fill), under both rings. connectorTangents and the exported connectorSegment are both deleted, with no fallback. (Amended per Addendum C §8 — extreme taper, lens-radius-anchored.)
+- [x] #3 The source circle and lens circle cannot be resized/created below finger-sized minima on the current display (source radius >= 16 CSS px, lens radius >= 28 CSS px, converted via cropScale, capped canvas-relative); verified on a real iPhone with a large photo.
+- [x] #4 The lens radius cannot exceed 45% of the canvas short side in both creation and corner-resize editing (MAX_MAGNIFIER_RADIUS 4096 deleted).
+- [x] #5 No gesture sequence (corner resize, src-zoom, creation) can produce a magnifier violating minLens <= radius <= maxLens or radius/zoom >= minSource, except on a degenerate canvas (short side below ~5 bitmap px) where the documented hi-wins clamp semantics let maxLens win over the floors; corner resize stays fixed-zoom.
+- [x] #6 Pre-existing out-of-range annotations render and export unchanged, and snap into range on their first size-affecting edit (stored data never mutated at render/load time).
+- [x] #7 Unit tests cover connector geometry (connectorShape), magnifierSizeLimits (scaling, caps, backstop), and the non-emptiness invariant minLens >= MIN_ZOOM * minSource; pnpm check, pnpm test, pnpm test:e2e all pass.
+- [x] #8 On a real iPhone the connector reads as a beam/cone fanning out from the source to the lens, with no gap, seam or unpainted lune where it meets either circle, on both a phone-sized and a large desktop capture. (Amended per Addendum C §8.)
+<!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented 2026-08-02 per Addendum B (docs/design/2026-08-02-magnifier-connector-and-size-limits.md) and Addendum C incl. §8 (docs/design/2026-08-02a-magnifier-tapered-connector.md). Three connector generations in one day, each after real-iPhone review by the user: single stroked rim-to-rim segment -> flat tapered quad (marker weight -> strokeWidth) -> lens-radius-anchored fan (w2 = 0.6 x lens radius floored by stroke weights, capped at r2 inside connectorShape; arc end flush with the lens rim; constant 17.46 deg half-angle at every scale). Size limits: magnifierSizeLimits(canvasSize, scale) — minima are CSS px x cropScale (source >= 16, lens >= 28 CSS px radius), maxima canvas-relative (lens <= 0.45 x short side); enforced at creation, corner resize and src-zoom; stored data never mutated at render/load.
+
+Verification: pnpm check clean; pnpm test 281/281; pnpm build:web + pnpm test:e2e 27/27. Reviewer rounds: Addendum B APPROVE (browser-verified); Addendum C REQUEST CHANGES (bookkeeping) -> APPROVE; §8 REQUEST CHANGES (bookkeeping/comment accuracy) -> APPROVE; pre-commit refactoring sweep (R1-R4, O1-O3) applied and verified. Device verification by user on real iPhone 2026-08-02 (phone + desktop capture): beam appearance, no seam/gap, min-size operability with a large photo — confirmed OK.
+<!-- SECTION:NOTES:END -->

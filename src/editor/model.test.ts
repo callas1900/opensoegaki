@@ -18,6 +18,7 @@ import {
   type TextAnnotation,
   type HighlighterAnnotation,
   type BadgeAnnotation,
+  type MagnifierAnnotation,
 } from "./model";
 
 describe("nextId", () => {
@@ -83,6 +84,17 @@ describe("translateAnnotation", () => {
     radius: 20,
   };
 
+  const magnifier: MagnifierAnnotation = {
+    id: "a6",
+    kind: "magnifier",
+    color: "#ED107B",
+    strokeWidth: 6,
+    at: { x: 100, y: 120 },
+    radius: 40,
+    zoom: 3,
+    from: { x: 20, y: 30 },
+  };
+
   it("arrow: shifts from/to by (dx,dy); preserves color/strokeWidth/id", () => {
     const result = translateAnnotation(arrow, 10, -5) as ArrowAnnotation;
     expect(result.from).toEqual({ x: 11, y: -3 });
@@ -124,13 +136,33 @@ describe("translateAnnotation", () => {
     expect(result.radius).toBe(badge.radius);
   });
 
+  it("magnifier (part='all', the default): shifts both from and at by (dx,dy); preserves radius/zoom", () => {
+    const result = translateAnnotation(magnifier, 5, -10) as MagnifierAnnotation;
+    expect(result.from).toEqual({ x: 25, y: 20 });
+    expect(result.at).toEqual({ x: 105, y: 110 });
+    expect(result.radius).toBe(magnifier.radius);
+    expect(result.zoom).toBe(magnifier.zoom);
+  });
+
+  it("magnifier (part='lens'): shifts only at, leaves from untouched", () => {
+    const result = translateAnnotation(magnifier, 5, -10, "lens") as MagnifierAnnotation;
+    expect(result.at).toEqual({ x: 105, y: 110 });
+    expect(result.from).toEqual(magnifier.from);
+  });
+
   it("does not mutate the input annotation", () => {
-    const cases: Annotation[] = [arrow, rect, text, highlight, badge];
+    const cases: Annotation[] = [arrow, rect, text, highlight, badge, magnifier];
     for (const a of cases) {
       const before = structuredClone(a);
       translateAnnotation(a, 100, 100);
       expect(a).toEqual(before);
     }
+  });
+
+  it("does not mutate the input annotation when part='lens'", () => {
+    const before = structuredClone(magnifier);
+    translateAnnotation(magnifier, 100, 100, "lens");
+    expect(magnifier).toEqual(before);
   });
 });
 

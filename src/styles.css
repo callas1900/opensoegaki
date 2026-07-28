@@ -161,6 +161,19 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
    reachable bottom, not an unreachable top) once it doesn't; browsers
    without `safe` support simply ignore the keyword and behave as before. */
 #stage.empty { touch-action: pan-y; align-content: safe center; }
+/* Annotating state: NOT a scroll container. The stage hosts absolutely
+   positioned overlays (the inline text editor above all — it is anchored to
+   the text's exact position and, unlike .crop-controls/.selection-delete, is
+   deliberately not clamped into the stage box), so it can have scrollable
+   overflow; any scroll of it displaces the canvas on screen, and
+   `touch-action: none` above leaves the user no way to scroll it back. With
+   `overflow: hidden` nothing can scroll it — neither app code nor WebKit's
+   own "reveal the focused field" behavior when the iOS keyboard opens (the
+   reported bug: tapping to type text shifted the canvas sideways). Room for
+   the keyboard is made by shrinking the stage instead — see
+   Editor.applyKeyboardInset in src/editor/canvas.ts. The empty/welcome state
+   keeps `overflow: auto` from the base rule above (TASK-44). */
+#stage:not(.empty) { overflow: hidden; }
 
 /* Welcome empty state, shown until an image is loaded */
 #welcome { text-align: center; color: #9aa0a6; }

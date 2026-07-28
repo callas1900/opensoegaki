@@ -11,6 +11,12 @@ import type { Annotation, Point } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { type Bounds, boundsOf } from "./bounds";
 import { pivotOfAnnotation, unrotatePoint } from "./rotate";
+import { magnifierSourceRadius } from "./magnifier";
+// Shared with render.ts's drawMagnifier so the hit band always matches the
+// weight the source ring is actually drawn at (the connector is deliberately
+// not hit-testable, so this module only ever uses the ring's weight, even
+// though the same constant also governs the connector in render.ts).
+import { MAGNIFIER_MARKER_STROKE_RATIO } from "./render";
 
 /** Topmost-first hit test: iterates the list from last (drawn on top) to first. */
 export function hitTest(
@@ -75,6 +81,15 @@ function hitsAnnotation(
       const b = boundsOf(a, measure);
       return pointInBounds(p, inflate(b, tolerance));
     }
+    case "magnifier": {
+      // Filled lens circle (the auto-badge precedent verbatim) OR the source
+      // circle's hollow RING band — its interior must not swallow clicks
+      // meant for whatever is underneath the source region.
+      if (Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance) return true;
+      const sourceRadius = magnifierSourceRadius(a);
+      const sourceStroke = Math.max(1, a.strokeWidth * MAGNIFIER_MARKER_STROKE_RATIO);
+      return nearCircleOutline(p, a.from, sourceRadius, tolerance + sourceStroke / 2);
+    }
   }
 }
 
@@ -99,6 +114,11 @@ function nearRectOutline(p: Point, r: Bounds, tol: number): boolean {
   // Degenerate thin rects (inner has no positive area) fall back to filled hit.
   if (inner.w <= 0 || inner.h <= 0) return true;
   return !pointInBounds(p, inner);
+}
+
+/** True when p is within `tol` of a circle's perimeter (ring band, not the filled disc) — mirrors `nearRectOutline` for circles. */
+function nearCircleOutline(p: Point, center: Point, r: number, tol: number): boolean {
+  return Math.abs(Math.hypot(p.x - center.x, p.y - center.y) - r) <= tol;
 }
 
 function pointInBounds(p: Point, b: Bounds): boolean {
