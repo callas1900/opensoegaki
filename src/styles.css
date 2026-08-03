@@ -166,14 +166,29 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
    the text's exact position and, unlike .crop-controls/.selection-delete, is
    deliberately not clamped into the stage box), so it can have scrollable
    overflow; any scroll of it displaces the canvas on screen, and
-   `touch-action: none` above leaves the user no way to scroll it back. With
-   `overflow: hidden` nothing can scroll it — neither app code nor WebKit's
-   own "reveal the focused field" behavior when the iOS keyboard opens (the
-   reported bug: tapping to type text shifted the canvas sideways). Room for
-   the keyboard is made by shrinking the stage instead — see
+   `touch-action: none` above leaves the user no way to scroll it back.
+   `overflow: hidden` is NOT enough: a hidden box is still a scroll container
+   — only the *user* can't scroll it, while script and the browser still can,
+   and Chromium/WebView2 does exactly that to reveal a newly focused field
+   (the Windows report: clicking the text tool at the canvas's right edge slid
+   the canvas 122px left; the input hangs past the stage's box, see
+   tests/e2e/text-editor-shift.spec.ts). `overflow: clip` is not a scroll
+   container at all, so no path — scrollIntoView, focus reveal, or a stray
+   scrollLeft write — can move it. `hidden` stays as the fallback declaration
+   for engines without `clip` (iOS < 16).
+
+   `min-height: 0` is required BY `clip`, not decoration: #stage is a
+   `flex: 1` column child whose automatic minimum size is content-based, and
+   WebKit only zeroes it for scroll-container overflow values — under `clip`
+   the stage refused to shrink below the canvas's own height, so opening the
+   badge bar no longer rescaled the image (TASK-38's device bug, caught by
+   badge-bar.spec.ts's "open bar rescales a loaded image"). Stating it
+   explicitly makes the shrink independent of that engine quirk.
+
+   Room for the iOS keyboard is made by shrinking the stage instead — see
    Editor.applyKeyboardInset in src/editor/canvas.ts. The empty/welcome state
    keeps `overflow: auto` from the base rule above (TASK-44). */
-#stage:not(.empty) { overflow: hidden; }
+#stage:not(.empty) { overflow: hidden; overflow: clip; min-height: 0; }
 
 /* Welcome empty state, shown until an image is loaded */
 #welcome { text-align: center; color: #9aa0a6; }

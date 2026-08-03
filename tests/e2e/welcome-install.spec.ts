@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { SMALL_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
  * Real-iPhone-viewport regression suite for TASK-43: the floating one-time
@@ -8,29 +9,6 @@ import { test, expect } from "@playwright/test";
  * no dismiss state, nothing persisted. Mirrors badge-bar.spec.ts and
  * crop-dismiss.spec.ts's style/config.
  */
-
-/**
- * A minimal 120x90 RGB PNG, generated once and inlined as base64 — the same
- * fixture crop-dismiss.spec.ts uses.
- */
-const TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAuUlEQVR4nO3QAQkAIADAMMOayUzGsoXCHTzA2Zhr60Lj+cEngQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINutUB4qMst6zJ6R4AAAAASUVORK5CYII=";
-
-/**
- * Load the inline PNG through the welcome screen's "Choose Photo" button —
- * same helper pattern as crop-dismiss.spec.ts's `loadTestImage`.
- */
-async function loadTestImage(page: import("@playwright/test").Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "img.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TEST_PNG_BASE64, "base64"),
-  });
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 /**
  * Scroll #stage all the way down. Used to reach content that #stage.empty's
@@ -217,7 +195,7 @@ test.describe("welcome-screen install invitation", () => {
     await page.goto("/");
     await expect(page.locator("#welcome-install")).toBeVisible();
 
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     // #welcome (and everything inside it, including the invitation) is
     // hidden entirely once #stage loses .empty — see styles.css's
@@ -248,7 +226,7 @@ test.describe("welcome-screen install invitation", () => {
     expect(await stage.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y");
     expect(await stage.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
 
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     expect(await stage.evaluate((el) => getComputedStyle(el).touchAction)).toBe("none");
     expect(await stage.evaluate((el) => el.scrollTop)).toBe(0);

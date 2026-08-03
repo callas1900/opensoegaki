@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { SMALL_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
  * Real-iPhone-viewport regression suite for TASK-46 (magnifier/loupe
@@ -6,31 +7,15 @@ import { test, expect, type Page } from "@playwright/test";
  * 2026-08-01a, revised after real-iPhone feedback): press on a white area,
  * slide onto the detail, release to commit — the loupe is auto-selected on
  * the select tool. Then a body-drag moves only the lens, and undo reverts
- * it. Mirrors rotate.spec.ts's fixture/`loadTestImage`/`canvasGeometry`/
- * `pixelAt` idiom — one continuous scenario as a single `test()` with
- * numbered steps, not separate `test()` blocks, since each step depends on
- * the previous one's committed/moved state.
+ * it. Mirrors rotate.spec.ts's `canvasGeometry`/`pixelAt` idiom — one
+ * continuous scenario as a single `test()` with numbered steps, not separate
+ * `test()` blocks, since each step depends on the previous one's
+ * committed/moved state.
  *
- * A minimal 120x90 RGB PNG — white background, a 10x10 BLACK square at
- * (20,20)-(29,29) inclusive (center (25,25)) — generated once with a tiny
- * ad hoc Node script (zlib.deflateSync over hand-built IHDR/IDAT/IEND
- * chunks, no new dependency) and inlined as base64, same as rotate.spec.ts's
- * fixture.
+ * The steps below sample MAGNIFIED pixels, so they depend on the shared
+ * SMALL_PNG_BASE64 fixture's content — a white 120x90 field with a 10x10
+ * black square at (20,20)-(29,29), center (25,25). See ./fixtures.ts.
  */
-const TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAlklEQVR42u3XMQ0AAAgEsfdvGhwwEkJ6ErpdSisFAWjQAg0atECDFmjQoAUatECDBi3QoAX6IXTG4IIGDRo0aNACDRo0aNAWXKBBgxZo0AINGrRAgxZo0KAFGrRAgwYt0KAFGjRogQYt0KBBCzRogQYNWqBBCzRo0AINWqBBgxZo0AINGrRAgxZo0KAFGjRoBKBBC/TZGmHU7eEWUTvKAAAAAElFTkSuQmCC";
-
-async function loadTestImage(page: Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "img.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TEST_PNG_BASE64, "base64"),
-  });
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 interface CanvasGeometry {
   /** Canvas element's on-screen (viewport) box, in CSS px. */
@@ -160,7 +145,7 @@ function placeLensE(from: { x: number; y: number }, sourceRadius: number, lensRa
 test.describe("magnifier: slide-to-aim creation, auto-select, body-drag, undo", () => {
   test("press-and-slide creates a loupe whose source follows the release point; the loupe auto-selects on the select tool; body-drag moves only the lens; undo reverts the move", async ({ page }) => {
     await page.goto("/");
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     // 1. Pick the magnifier tool — participates in the same tool-active UI
     // as every other tool button (crop-dismiss.spec.ts's precedent).
@@ -351,7 +336,7 @@ test.describe("magnifier: slide-to-aim creation, auto-select, body-drag, undo", 
     page.on("pageerror", (err) => pageErrors.push(err));
 
     await page.goto("/");
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     await page.locator('[data-tool="magnifier"]').tap();
 

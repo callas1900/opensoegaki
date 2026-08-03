@@ -1822,7 +1822,17 @@ export class Editor {
     });
     input.addEventListener("blur", () => this.commitTextEditor());
     window.addEventListener("resize", reposition);
-    input.focus();
+    // `preventScroll` is load-bearing (Windows/WebView2 report: clicking the
+    // text tool at the canvas's right edge slid the whole canvas left). The
+    // default focus steps scroll the focused element into view, and this
+    // input — ~170px wide, absolutely positioned, anchored at the click point
+    // — hangs past #stage's box whenever the canvas fills the stage's width.
+    // Chromium then scrolls #stage to reveal it; WebKit does not, which is
+    // why only the desktop shell showed it. The canvas must never move just
+    // because a text editor opened, so the scroll is suppressed at the source
+    // here (and #stage is `overflow: clip` in styles.css, which closes every
+    // other scroll path).
+    input.focus({ preventScroll: true });
     // Keep the input visible above the iOS soft keyboard (TASK-35.10 AC#3):
     // applied once now and re-applied on every visualViewport resize/scroll
     // (keyboard opening/closing, or iOS panning the visual viewport).

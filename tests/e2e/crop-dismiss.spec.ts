@@ -1,43 +1,19 @@
 import { test, expect } from "@playwright/test";
+import { SMALL_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
  * Real-iPhone-viewport regression suite for TASK-40: the crop tool's ✗/✓
  * controls must always exit crop mode to the select tool, whether or not the
  * region was edited (amends TASK-4 AC#5, which kept crop mode active on an
  * untouched/cancelled region — see backlog task-40 for the recorded
- * decision). Mirrors badge-bar.spec.ts's style/config.
- *
- * A minimal 120x90 RGB PNG, generated once and inlined as base64 (no test
- * fixture file, no new dependency), stands in for a captured screenshot.
+ * decision). Mirrors badge-bar.spec.ts's style/config. The fixture image and
+ * its loader are shared — see ./fixtures.ts.
  */
-const TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAuUlEQVR4nO3QAQkAIADAMMOayUzGsoXCHTzA2Zhr60Lj+cEngQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINutUB4qMst6zJ6R4AAAAASUVORK5CYII=";
-
-/**
- * Load the inline PNG through the welcome screen's "Choose Photo" button
- * (`#welcome-pick`, which lazily opens the web platform's hidden file
- * input — see src/platform/web.ts's pickImage). `page.waitForEvent`
- * arms the listener before the tap so the file-chooser dialog is never
- * missed to a timing race.
- */
-async function loadTestImage(page: import("@playwright/test").Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "img.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TEST_PNG_BASE64, "base64"),
-  });
-  // #stage carries the "empty" class while no image is loaded (see
-  // src/app.ts's syncEmptyState); it is removed once the picked image lands.
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 test.describe("crop confirm/cancel exits crop mode", () => {
   test("cancel (✗) discards the crop and returns to the select tool", async ({ page }) => {
     await page.goto("/");
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     await page.locator('[data-tool="crop"]').tap();
     const controls = page.locator(".crop-controls");
@@ -51,7 +27,7 @@ test.describe("crop confirm/cancel exits crop mode", () => {
 
   test("apply (✓) with an untouched region exits crop mode without changing the image", async ({ page }) => {
     await page.goto("/");
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     const canvas = page.locator("#canvas");
     const widthBefore = await canvas.getAttribute("width");

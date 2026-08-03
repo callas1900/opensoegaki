@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { TALL_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
  * Real-iPhone-viewport regression suite for the badge fixed-number bottom
@@ -8,30 +9,6 @@ import { test, expect } from "@playwright/test";
  * so these tests exercise the toolbar directly against the welcome/empty-
  * editor screen; no fixture image needs to be loaded.
  */
-
-/**
- * A tall (120x900) portrait PNG, generated once and inlined as base64 (same
- * pattern as crop-dismiss.spec.ts's fixture, which is landscape and
- * therefore unsuitable here): its aspect ratio makes it height-constrained
- * on the 390x844 iPhone viewport, so shrinking #stage's height when the
- * badge bar opens is the binding constraint the JS-driven canvas sizing
- * (TASK-38 follow-up) must react to.
- */
-const TALL_TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAAOECAIAAADlvmJ6AAAEdklEQVR42u3QQQ0AAAgEoAtrCCMayxZ+ZCMBqR4ORIFo0YgWLdqCaNGIFi3agmjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiRSsQLRrRokVbEC0a0aJFWxAtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNatGgFokUjWrRoC6JFI1q0aAuiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEixatQLRoRIsWbUG0aESLFm1BtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRor9YQ1BMDakl4j0AAAAASUVORK5CYII=";
-
-/** Mirrors crop-dismiss.spec.ts's `loadTestImage` helper, taking the PNG bytes as a parameter. */
-async function loadTallTestImage(page: import("@playwright/test").Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "tall.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TALL_TEST_PNG_BASE64, "base64"),
-  });
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 test.describe("badge fixed-number bottom bar", () => {
   test("second tap on the badge tool opens the bar and replaces the share bar; one tap alone does not", async ({
@@ -285,7 +262,7 @@ test.describe("badge fixed-number bottom bar", () => {
 
   test("open bar rescales a loaded image and closing restores it", async ({ page }) => {
     await page.goto("/");
-    await loadTallTestImage(page);
+    await loadTestImage(page, TALL_PNG_BASE64);
 
     const badgeTool = page.locator('[data-tool="badge"]');
     const bar = page.locator("#badge-bar");
@@ -366,7 +343,7 @@ test.describe("badge fixed-number bottom bar", () => {
 
   test("canvas aspect ratio survives stage resizes that happen without a window resize", async ({ page }) => {
     await page.goto("/");
-    await loadTallTestImage(page);
+    await loadTestImage(page, TALL_PNG_BASE64);
 
     const badgeTool = page.locator('[data-tool="badge"]');
     const bar = page.locator("#badge-bar");

@@ -1,38 +1,27 @@
 import { test, expect } from "@playwright/test";
+import { TALL_PNG_BASE64, WIDE_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
- * Real-iPhone-viewport regression suite for the inline text editor's effect
- * on the stage's scroll position (reported on-device: "the canvas is shifted
- * when I try to type text").
+ * Regression suite for the inline text editor's effect on the stage's scroll
+ * position — two device reports with one root cause: "the canvas is shifted
+ * when I try to type text" (iPhone) and "clicking the text tool at the right
+ * edge slides the canvas left" (Windows).
  *
- * The editor is a real, absolutely-positioned <input> appended to #stage,
- * which is `overflow: auto`. Anything that scrolls #stage moves the canvas
- * on-screen — and while an image is loaded #stage has `touch-action: none`,
- * so the user cannot scroll it back by hand.
+ * The editor is a real, absolutely positioned <input> appended to #stage, so
+ * it can give #stage scrollable overflow, and any scroll of #stage moves the
+ * canvas on screen — with `touch-action: none` while an image is loaded, the
+ * user cannot even scroll it back. Runs in BOTH projects on purpose: Chromium
+ * and WebKit disagree about scrolling a clipped ancestor to reveal a focused
+ * field, so a single-engine version of this suite passed while the other
+ * engine's users watched the canvas jump.
  */
-
-/** Tall (120x900) portrait PNG — same fixture idea as badge-bar.spec.ts: height-constrained on a 390x844 viewport. */
-const TALL_TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAAOECAIAAADlvmJ6AAAEdklEQVR42u3QQQ0AAAgEoAtrCCMayxZ+ZCMBqR4ORIFo0YgWLdqCaNGIFi3agmjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiRSsQLRrRokVbEC0a0aJFWxAtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNatGgFokUjWrRoC6JFI1q0aAuiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEixatQLRoRIsWbUG0aESLFm1BtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRor9YQ1BMDakl4j0AAAAASUVORK5CYII=";
-
-async function loadTallTestImage(page: import("@playwright/test").Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "tall.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TALL_TEST_PNG_BASE64, "base64"),
-  });
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 test.describe("inline text editor does not move the canvas", () => {
   test("opening the editor near the bottom of the canvas leaves #stage unscrolled and the canvas in place", async ({
     page,
   }) => {
     await page.goto("/");
-    await loadTallTestImage(page);
+    await loadTestImage(page, TALL_PNG_BASE64);
 
     const stage = page.locator("#stage");
     const canvas = page.locator("#canvas");
@@ -51,13 +40,52 @@ test.describe("inline text editor does not move the canvas", () => {
     expect(scroll).toEqual({ top: 0, left: 0 });
     expect(after.y).toBeCloseTo(before.y, 0);
     expect(after.x).toBeCloseTo(before.x, 0);
+    // The canvas holds still because the focus scroll was suppressed, NOT
+    // because focus failed to land — without focus the editor could not be
+    // typed into at all.
+    expect(await page.evaluate(() => document.activeElement?.className)).toBe("text-editor");
+  });
+
+  /**
+   * The Windows/WebView2 report: clicking the text tool at the RIGHT EDGE of
+   * a canvas that fills the stage's width slid the whole canvas left, because
+   * focusing the input made the browser scroll #stage to reveal the part of
+   * the input hanging past the stage's edge. Chromium does this to an
+   * `overflow: hidden` ancestor; WebKit does not — hence the desktop-chromium
+   * project.
+   */
+  test("opening the editor at the canvas's right edge never moves the canvas", async ({ page }) => {
+    await page.goto("/");
+    await loadTestImage(page, WIDE_PNG_BASE64);
+
+    const stage = page.locator("#stage");
+    const canvas = page.locator("#canvas");
+    const before = (await canvas.boundingBox())!;
+
+    await page.locator('[data-tool="text"]').tap();
+    await canvas.tap({ position: { x: before.width - 4, y: before.height / 2 } });
+    await expect(page.locator(".text-editor")).toBeVisible();
+    // Typing is its own scroll trigger — the caret moves further past the
+    // stage's edge with every character, and "scroll the caret into view"
+    // walks the same ancestor chain the focus reveal does.
+    await page.keyboard.type("Hello");
+
+    const after = (await canvas.boundingBox())!;
+    expect(await stage.evaluate((el) => ({ top: el.scrollTop, left: el.scrollLeft }))).toEqual({
+      top: 0,
+      left: 0,
+    });
+    expect(after.x).toBeCloseTo(before.x, 0);
+    expect(after.y).toBeCloseTo(before.y, 0);
+    // Held still by suppressing the focus scroll, not by failing to focus.
+    expect(await page.evaluate(() => document.activeElement?.className)).toBe("text-editor");
   });
 
   test("a visualViewport resize while the editor is open (soft keyboard) does not move the canvas", async ({
     page,
   }) => {
     await page.goto("/");
-    await loadTallTestImage(page);
+    await loadTestImage(page, TALL_PNG_BASE64);
 
     const stage = page.locator("#stage");
     const canvas = page.locator("#canvas");
@@ -92,7 +120,7 @@ test.describe("inline text editor does not move the canvas", () => {
     page,
   }) => {
     await page.goto("/");
-    await loadTallTestImage(page);
+    await loadTestImage(page, TALL_PNG_BASE64);
 
     const stage = page.locator("#stage");
     const canvas = page.locator("#canvas");

@@ -1,29 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
+import { SMALL_PNG_BASE64, loadTestImage } from "./fixtures";
 
 /**
  * Real-iPhone-viewport regression suite for TASK-41 (rotate a selected
  * annotation with the select tool): draw a rect, select it, drag its rotate
  * knob roughly 45° clockwise, and assert both the floating delete button
- * (TASK-35.11) and the rasterized pixels moved with it. Mirrors
- * crop-dismiss.spec.ts's fixture/`loadTestImage` idiom.
- *
- * A minimal 120x90 RGB PNG, generated once and inlined as base64 (no test
- * fixture file, no new dependency), stands in for a captured screenshot.
+ * (TASK-35.11) and the rasterized pixels moved with it. The fixture image and
+ * its loader are shared — see ./fixtures.ts.
  */
-const TEST_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAuUlEQVR4nO3QAQkAIADAMMOayUzGsoXCHTzA2Zhr60Lj+cEngQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINutUB4qMst6zJ6R4AAAAASUVORK5CYII=";
-
-async function loadTestImage(page: Page): Promise<void> {
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.locator("#welcome-pick").tap();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "img.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(TEST_PNG_BASE64, "base64"),
-  });
-  await expect(page.locator("#stage")).not.toHaveClass(/empty/);
-}
 
 interface CanvasGeometry {
   /** Canvas element's on-screen (viewport) box, in CSS px. */
@@ -62,7 +46,7 @@ function colorDelta(a: [number, number, number, number], b: [number, number, num
 test.describe("rotate a selected annotation", () => {
   test("dragging the rotate knob ~45° moves the delete button and the top-edge pixel", async ({ page }) => {
     await page.goto("/");
-    await loadTestImage(page);
+    await loadTestImage(page, SMALL_PNG_BASE64);
 
     // 1. Draw a rect (bitmap px: 20,45 to 100,85 — 80x40, centered in the
     // 120x90 fixture with room above for the knob).

@@ -21,6 +21,24 @@ export default defineConfig({
     baseURL: BASE_URL,
   },
   projects: [
+    // Windows/WebView2 stand-in. Deliberately narrow (`testMatch`): the suite
+    // stays iPhone-first, but the inline text editor's "the canvas must never
+    // move" contract is engine-specific — Chromium scrolls an
+    // `overflow: hidden` ancestor to reveal a newly focused field and WebKit
+    // does not, so the WebKit-only suite passed while the desktop app slid
+    // the canvas sideways on every right-edge text click. `hasTouch` is on
+    // because the specs drive the canvas with tap(). fixtures.spec.ts is in
+    // scope for the same reason: three of the suite's inlined PNGs were
+    // truncated and only Chromium refused to decode them (see fixtures.ts).
+    {
+      name: "desktop-chromium",
+      testMatch: /(text-editor-shift|fixtures)\.spec\.ts/,
+      use: {
+        browserName: "chromium",
+        viewport: { width: 1280, height: 800 },
+        hasTouch: true,
+      },
+    },
     {
       name: "iphone-webkit",
       use: {
