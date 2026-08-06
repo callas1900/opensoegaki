@@ -28,17 +28,17 @@ import { type MagnifierSizeLimits, magnifierSourceRadius, clampZoom } from "./ma
 export type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 /** The 2 endpoint handles used by arrow. */
 export type ArrowHandle = "from" | "to";
-/** The 2 round handles unique to magnifier: `src-move` (drag the source region) and `src-zoom` (drag to change magnification). Its 4 lens corners reuse the existing `BoxHandle` "nw"|"ne"|"sw"|"se" ids — no new ids needed there. */
-export type MagnifierHandle = "src-move" | "src-zoom";
+/** The one round handle unique to magnifier: `src-zoom` (drag to change magnification, on the source rim). Dragging the source region itself is a body drag, not a handle — see hittest.ts's `magnifierHitPart` and canvas.ts's source-body drag. Its 4 lens corners reuse the existing `BoxHandle` "nw"|"ne"|"sw"|"se" ids — no new ids needed there. */
+export type MagnifierHandle = "src-zoom";
 export type ResizeHandle = BoxHandle | ArrowHandle | MagnifierHandle;
 
 export interface HandleSpec {
   id: ResizeHandle;
   pos: Point;
   // Selection-chrome hint only (drawing lives in canvas.ts): square (default,
-  // when absent) for box/corner handles, circle for magnifier's src-move/
-  // src-zoom — keeping the two handle families visually unmistakable.
-  shape?: "square" | "circle";
+  // when absent) for box/corner handles, grip for magnifier's src-zoom —
+  // keeping the two handle families visually unmistakable.
+  shape?: "square" | "grip";
 }
 
 // SE on the source rim — where the src-zoom handle sits.
@@ -68,9 +68,10 @@ export const MAX_BADGE_RADIUS = 400;
  * Highlight returns `[]` — bbox-scaling a freehand polyline would distort the
  * stroke shape unpredictably, so it is resize-exempt (move/delete only).
  * Magnifier gets its 4 lens corners (on `bounds`, the lens's bounding square)
- * PLUS the 2 round source handles, `src-move` listed FIRST so it wins exact
- * ties in `nearestHandle` (its center sits at `from`, often close to other
- * chrome, so the tie-break matters more than for the other kinds here).
+ * PLUS the single round `src-zoom` handle, listed FIRST so it wins exact ties
+ * in `nearestHandle` — the source disc under it is now itself hit-testable
+ * (see hittest.ts's `magnifierHitPart`), so an exact tie at the grip's own
+ * center must resolve to the grip, not fall through to a corner or the body.
  */
 export function resizeHandlesFor(a: Annotation, bounds: Bounds): HandleSpec[] {
   switch (a.kind) {
@@ -94,8 +95,7 @@ export function resizeHandlesFor(a: Annotation, bounds: Bounds): HandleSpec[] {
         y: a.from.y + sourceRadius * Math.sin(MAGNIFIER_ZOOM_HANDLE_ANGLE),
       };
       return [
-        { id: "src-move", pos: a.from, shape: "circle" },
-        { id: "src-zoom", pos: zoomHandlePos, shape: "circle" },
+        { id: "src-zoom", pos: zoomHandlePos, shape: "grip" },
         ...cornerHandles(bounds),
       ];
     }
@@ -207,6 +207,66 @@ function withinInset(p: Point, inset: { x0: number; y0: number; x1: number; y1: 
   return p.x >= inset.x0 && p.x <= inset.x1 && p.y >= inset.y0 && p.y <= inset.y1;
 }
 
+/** A circle to keep the floating delete button clear of, in the same CSS-px space as `padded`/`stage` below. */
+export interface AvoidCircle {
+  center: Point;
+  radius: number;
+}
+/** Which corner of the padded selection bbox the delete button ended up anchored to. */
+export type DeleteCorner = "ne" | "nw" | "se" | "sw";
+
+/**
+ * Pick a corner of the padded selection bbox to anchor the floating delete
+ * button to, trying NE first but falling back to NW, SE, then SW if NE would
+ * either run off the stage viewport or overlap `avoid` (the magnifier's
+ * source disc, already expanded by the caller with touch-hit clearance).
+ * Assumes an axis-aligned `padded` box — true for every caller, since this is
+ * only consulted for magnifier selections, and magnifiers cannot rotate
+ * (`canRotate` excludes "magnifier").
+ *
+ * The caller (canvas.ts's `positionSelectionControls`) computes its legacy
+ * placement (ideal NE + viewport clamp + drop-below fallback) first, and
+ * only calls this helper if THAT placement collides with the expanded source
+ * disc — so in practice this only ever runs to find an alternative once a
+ * real conflict has already been detected.
+ *
+ * A candidate qualifies iff its button rect lies fully inside the stage
+ * viewport AND the nearest point of that rect to `avoid.center` is at least
+ * `avoid.radius` away (same nearest-point idiom canvas.ts's `knobTooClose`
+ * check uses). The first qualifying candidate, in NE -> NW -> SE -> SW order,
+ * wins. Returns `null` if none qualifies — the caller then keeps its legacy
+ * placement as a best-effort fallback.
+ */
+export function deleteButtonCornerFor(
+  padded: Bounds,
+  btn: { w: number; h: number },
+  margin: number,
+  stage: { w: number; h: number },
+  avoid: AvoidCircle,
+): { corner: DeleteCorner; left: number; top: number } | null {
+  const topY = padded.y - margin - btn.h;
+  const bottomY = padded.y + padded.h + margin;
+  const neLeft = padded.x + padded.w + margin;
+  const nwLeft = padded.x - margin - btn.w;
+
+  const candidates: { corner: DeleteCorner; left: number; top: number }[] = [
+    { corner: "ne", left: neLeft, top: topY },
+    { corner: "nw", left: nwLeft, top: topY },
+    { corner: "se", left: neLeft, top: bottomY },
+    { corner: "sw", left: nwLeft, top: bottomY },
+  ];
+
+  for (const c of candidates) {
+    const withinStage = c.left >= 0 && c.top >= 0 && c.left + btn.w <= stage.w && c.top + btn.h <= stage.h;
+    if (!withinStage) continue;
+    const dx = Math.max(c.left - avoid.center.x, 0, avoid.center.x - (c.left + btn.w));
+    const dy = Math.max(c.top - avoid.center.y, 0, avoid.center.y - (c.top + btn.h));
+    const d = Math.hypot(dx, dy);
+    if (d >= avoid.radius) return c;
+  }
+  return null;
+}
+
 /**
  * The point pinned by `handle` — diagonally opposite corner for box (rect/
  * image) and text handles, the fixed (non-dragged) endpoint for arrow, the
@@ -225,11 +285,11 @@ export function anchorPointFor(a: Annotation, bounds: Bounds, handle: ResizeHand
     case "badge":
       return { x: a.at.x, y: a.at.y };
     case "magnifier":
-      // The lens center is invariant under all four magnifier gestures (lens
-      // resize is center-pinned; src-move/src-zoom don't touch `at` at all).
-      // Only ever consulted when `angle !== 0`, which the UI can never
-      // produce for a magnifier (canRotate("magnifier") === false) — same
-      // "not really applicable" precedent as badge/highlight.
+      // The lens center is invariant under every magnifier gesture (lens
+      // resize is center-pinned; src-zoom and the source-body drag don't
+      // touch `at` at all). Only ever consulted when `angle !== 0`, which the
+      // UI can never produce for a magnifier (canRotate("magnifier") ===
+      // false) — same "not really applicable" precedent as badge/highlight.
       return { x: a.at.x, y: a.at.y };
     case "highlight":
       return pivotOf(bounds);
@@ -463,16 +523,17 @@ function applyBadgeResize(a: BadgeAnnotation, pointer: Point): BadgeAnnotation {
 
 /**
  * magnifier: one orthogonal assignment per handle — every degree of freedom
- * has exactly one control:
- * - `src-move`: `from` snaps straight to the pointer, UNCLAMPED (handle
- *   drags snap to the pointer everywhere else in this app) — this is a
- *   user-steered edit of an already-committed, undoable annotation, so the
- *   app's general "never clamp annotations" policy applies, unlike the
- *   *creation* gesture's `magnifierSlideUpdate` (magnifier.ts), which does
- *   clamp `from` (review round 2 ruling: a creation gesture must always
- *   produce a usable loupe, never a provably-empty one). If `src-move` ever
- *   needs clamping too, reuse magnifier.ts's `clampPointToCanvas` rather
- *   than re-deriving it.
+ * has exactly one control. Three gestures now (the `src-move` handle is
+ * gone; dragging `from` is a source-BODY drag, hit-tested by
+ * `magnifierHitPart` and applied via `translateAnnotation(a, dx, dy,
+ * "source")` in canvas.ts — not a resize handle, so it never reaches this
+ * function. `from` still stays UNCLAMPED for that drag, same policy the
+ * deleted `src-move` branch used to document here: it is a user-steered edit
+ * of an already-committed, undoable annotation, so the app's general "never
+ * clamp annotations" policy applies, unlike the *creation* gesture's
+ * `magnifierSlideUpdate` (magnifier.ts), which does clamp `from` (review
+ * round 2 ruling: a creation gesture must always produce a usable loupe,
+ * never a provably-empty one)):
  * - `src-zoom`: a single scalar radial drag from `from` sets `zoom` at fixed
  *   `radius` — a smaller source ring reads as more magnification. `Number.
  *   EPSILON` (not 0) as the hypot floor means a zero-distance drag can never
@@ -486,9 +547,6 @@ function applyBadgeResize(a: BadgeAnnotation, pointer: Point): BadgeAnnotation {
  *   2026-08-02).
  */
 function applyMagnifierResize(a: MagnifierAnnotation, handle: ResizeHandle, pointer: Point, limits: MagnifierSizeLimits): MagnifierAnnotation {
-  if (handle === "src-move") {
-    return { ...a, from: { x: pointer.x, y: pointer.y } };
-  }
   if (handle === "src-zoom") {
     const dist = Math.max(Math.hypot(pointer.x - a.from.x, pointer.y - a.from.y), Number.EPSILON);
     return { ...a, zoom: clampZoom(a.radius / dist, a, limits) };

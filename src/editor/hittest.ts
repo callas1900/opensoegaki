@@ -7,7 +7,7 @@
  * so `render.ts` can also reach them without a `hittest.ts` import cycle) —
  * import them from there directly, not through this module.
  */
-import type { Annotation, Point } from "./model";
+import type { Annotation, MagnifierAnnotation, MagnifierPart, Point } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { type Bounds, boundsOf } from "./bounds";
 import { pivotOfAnnotation, unrotatePoint } from "./rotate";
@@ -81,16 +81,32 @@ function hitsAnnotation(
       const b = boundsOf(a, measure);
       return pointInBounds(p, inflate(b, tolerance));
     }
-    case "magnifier": {
-      // Filled lens circle (the auto-badge precedent verbatim) OR the source
-      // circle's hollow RING band — its interior must not swallow clicks
-      // meant for whatever is underneath the source region.
-      if (Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance) return true;
-      const sourceRadius = magnifierSourceRadius(a);
-      const sourceStroke = Math.max(1, a.strokeWidth * MAGNIFIER_MARKER_STROKE_RATIO);
-      return nearCircleOutline(p, a.from, sourceRadius, tolerance + sourceStroke / 2);
-    }
+    case "magnifier":
+      return magnifierHitPart(a, p, tolerance) !== null;
   }
+}
+
+/**
+ * Which half of a magnifier the pointer landed on — the lens disc wins where
+ * the two overlap (paint order): the lens disc is tested first (filled disc,
+ * `radius + tolerance`, the auto-badge precedent verbatim), then the source
+ * disc (filled disc, `magnifierSourceRadius(a) + tolerance + markerStroke/2`
+ * — the outer edge of the ring band that used to be the only hit-testable
+ * part of the source region, so nothing that hit before stops hitting).
+ * `null` when neither disc is hit.
+ *
+ * No unrotation: a magnifier can never carry a non-zero `angle`
+ * (`canRotate("magnifier") === false` — see rotate.ts — and group rotation is
+ * translation-only), so this probe takes world coords as-is. This is the one
+ * owner of magnifier hit geometry; `hitsAnnotation`'s "magnifier" case is a
+ * pure delegation to it.
+ */
+export function magnifierHitPart(a: MagnifierAnnotation, p: Point, tolerance: number): MagnifierPart | null {
+  if (Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance) return "lens";
+  const sourceRadius = magnifierSourceRadius(a);
+  const markerStroke = Math.max(1, a.strokeWidth * MAGNIFIER_MARKER_STROKE_RATIO);
+  if (Math.hypot(p.x - a.from.x, p.y - a.from.y) <= sourceRadius + tolerance + markerStroke / 2) return "source";
+  return null;
 }
 
 /** Shortest distance from point p to segment v-w. */
@@ -114,11 +130,6 @@ function nearRectOutline(p: Point, r: Bounds, tol: number): boolean {
   // Degenerate thin rects (inner has no positive area) fall back to filled hit.
   if (inner.w <= 0 || inner.h <= 0) return true;
   return !pointInBounds(p, inner);
-}
-
-/** True when p is within `tol` of a circle's perimeter (ring band, not the filled disc) — mirrors `nearRectOutline` for circles. */
-function nearCircleOutline(p: Point, center: Point, r: number, tol: number): boolean {
-  return Math.abs(Math.hypot(p.x - center.x, p.y - center.y) - r) <= tol;
 }
 
 function pointInBounds(p: Point, b: Bounds): boolean {

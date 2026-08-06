@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hitTest } from "./hittest";
+import { hitTest, magnifierHitPart } from "./hittest";
 import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, ImageAnnotation, MagnifierAnnotation, Annotation } from "./model";
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { pivotOfAnnotation, rotatePoint } from "./rotate";
@@ -210,8 +210,9 @@ describe("hitTest with rotation", () => {
   });
 });
 
-// sourceRadius = radius/zoom = 60/3 = 20; sourceStroke = max(1, 6*0.6) = 3.6;
-// ring hit band = tolerance + sourceStroke/2 = 5 + 1.8 = 6.8.
+// sourceRadius = radius/zoom = 60/3 = 20; markerStroke = max(1, 6*0.9) = 5.4;
+// source disc hit band = tolerance + markerStroke/2 = 5 + 2.7 = 7.7, so the
+// source disc hits out to 20 + 7.7 = 27.7 from `from`.
 describe("hitTest magnifier", () => {
   it("the lens interior (a filled circle) hits", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
@@ -219,23 +220,59 @@ describe("hitTest magnifier", () => {
     expect(hitTest([m], { x: 200 + 64.9, y: 150 }, measure, 5)).toBe(m); // just inside radius + tolerance
   });
 
-  it("the source circle's hollow interior does NOT hit (it must not swallow clicks meant for what's underneath)", () => {
+  it("the source disc interior hits (it is the drag surface, live even when the magnifier is unselected)", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
-    // Distance 5 from `from`, well short of sourceRadius (20) minus the ring band (6.8).
-    expect(hitTest([m], { x: 55, y: 50 }, measure, 5)).toBeNull();
+    // Distance 5 from `from`, well inside sourceRadius (20).
+    expect(hitTest([m], { x: 55, y: 50 }, measure, 5)).toBe(m);
     // The exact center of the source circle.
-    expect(hitTest([m], { x: 50, y: 50 }, measure, 5)).toBeNull();
+    expect(hitTest([m], { x: 50, y: 50 }, measure, 5)).toBe(m);
   });
 
-  it("the source ring itself hits", () => {
+  it("the source disc's outer band hits", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
     expect(hitTest([m], { x: 50 + 20, y: 50 }, measure, 5)).toBe(m); // exactly on the ring
-    expect(hitTest([m], { x: 50 + 20 + 6.7, y: 50 }, measure, 5)).toBe(m); // just inside the band
+    expect(hitTest([m], { x: 50 + 27.6, y: 50 }, measure, 5)).toBe(m); // just inside the band (27.7)
   });
 
-  it("a point well outside both the lens and the source ring band misses", () => {
+  it("a point well outside both the lens and the source disc band misses", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
     expect(hitTest([m], { x: 500, y: 500 }, measure, 5)).toBeNull();
+  });
+});
+
+// Direct magnifierHitPart coverage: the probe's own vocabulary ("lens" |
+// "source" | null), including the lens-wins-on-overlap priority that
+// hitTest's topmost-first / paint-order rule depends on.
+describe("magnifierHitPart", () => {
+  it("returns 'lens' at the lens center", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    expect(magnifierHitPart(m, { x: 200, y: 150 }, 5)).toBe("lens");
+  });
+
+  it("returns 'lens' where the lens and source discs overlap (paint-order priority)", () => {
+    // at=(100,100) r=30 (effective 35 with tolerance); from=(100,140) sourceRadius=15
+    // (effective 22.7 with band); centers 40 apart, so the two effective discs
+    // (35 and 22.7) overlap along the line between them (35 + 22.7 > 40 > |35-22.7|).
+    const m = magnifier({ x: 100, y: 100 }, 30, { x: 100, y: 140 }, 2);
+    const overlapPoint = { x: 100, y: 125 }; // dist 25 from `at`, dist 15 from `from` — inside both
+    expect(magnifierHitPart(m, overlapPoint, 5)).toBe("lens");
+  });
+
+  it("returns 'source' at the source center and at the source band's outer edge", () => {
+    const m = magnifier({ x: 100, y: 100 }, 30, { x: 100, y: 140 }, 2);
+    expect(magnifierHitPart(m, { x: 100, y: 140 }, 5)).toBe("source");
+    // sourceRadius 15 + band 7.7 = 22.7; just inside, away from the lens.
+    expect(magnifierHitPart(m, { x: 100, y: 140 + 22.6 }, 5)).toBe("source");
+  });
+
+  it("returns null just outside the source band", () => {
+    const m = magnifier({ x: 100, y: 100 }, 30, { x: 100, y: 140 }, 2);
+    expect(magnifierHitPart(m, { x: 100, y: 140 + 22.8 }, 5)).toBeNull();
+  });
+
+  it("returns null far away from both discs", () => {
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
+    expect(magnifierHitPart(m, { x: 1000, y: 1000 }, 5)).toBeNull();
   });
 });
 

@@ -75,19 +75,28 @@ export const MAGNIFIER_CONNECTOR_MIN_GAP_PX = 2;
 // (image-relative): a thing is "too big" relative to the image it would
 // otherwise hide.
 
-// Smallest allowed DERIVED source radius, in CSS px. The source's two
-// handles (src-move at `from`, src-zoom on the rim) are separated by exactly
-// the source radius; HANDLE_DRAW_PX = 10 means glyph half-widths are 5 CSS
-// px each, so a 16 CSS px separation leaves ~6 CSS px of clear space between
-// them — two visually distinct, independently aimable targets.
-export const MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX = 16;
+// Smallest allowed DERIVED source radius, in CSS px (16 -> 20, design note
+// "magnifier UX brush-up", 2026-08-06). The old rationale — the source's two
+// handles, `src-move` at `from` and `src-zoom` on the rim, separated by
+// exactly the source radius, so 16 left ~6 CSS px of clear space between them
+// — died with `src-move`: the whole source disc is now the drag surface
+// (hittest.ts's `magnifierHitPart`), not a pair of point handles. New
+// rationale: the `src-zoom` grip's 24 CSS px touch hit radius
+// (`handleHitRadius()`) eats into the disc from the rim, so at
+// `minSource = 20` the always-body-draggable lune (the part of the disc
+// outside the grip's hit radius on every side) is `2*20 - 24 = 16` CSS px
+// (vs. 8 at the old 16) — plenty of room to grab the body without triggering
+// the grip. See magnifierSizeLimits' non-emptiness invariant for how this
+// interacts with MIN_MAGNIFIER_LENS_RADIUS_CSS_PX.
+export const MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX = 20;
 
 // Smallest allowed lens radius, in CSS px. Diameter 56 CSS px: above Apple's
 // ~44pt touch target, leaves a draggable body between the four 10px corner
 // handles, and shows recognizable magnified content. Also
-// >= MIN_MAGNIFIER_ZOOM * MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX (19.2), which
-// keeps zoom 1.2 reachable at the minimum lens size (see magnifierSizeLimits'
-// non-emptiness invariant).
+// >= MIN_MAGNIFIER_ZOOM * MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX (24, since the
+// 2026-08-06 brush-up raised the source floor to 20), which keeps zoom 1.2
+// reachable at the minimum lens size (see magnifierSizeLimits' non-emptiness
+// invariant).
 export const MIN_MAGNIFIER_LENS_RADIUS_CSS_PX = 28;
 
 // Guard against an extreme panorama's short side making the operability
@@ -267,19 +276,27 @@ export const MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO = 1.0;
  *
  * `source` is `[p1 + n*w1/2, p1 - n*w1/2]` (`p1`, `n` from
  * `trimmedConnectorAxis`) — a flat (tangent) end at the source rim. The
- * source ring is stroked as a band of half-width `>= 2.5px` (`markerStroke +
- * 4`, halved), centered on the rim; the connector's own two-pass outline
- * overshoots this flat end by exactly 2px; `2 < 2.5` holds for every
- * `strokeWidth`, because both bands are floored by the shared `+4` halo
- * constant, not by the stroke weight itself. This is also why `render.ts`
- * deliberately never sets `ctx.lineJoin`: even the sharpest inherited join
- * (miter, whose tip at `lineWidth = 4` extends `4 / (2*sin45deg) ~= 2.83px`
- * beyond a right-angle corner — past the `~2.5px` band half-width on its
- * own) stays covered at `source[0]`/`source[1]`, because each corner's miter
- * bisector points radially INWARD, toward the source circle's own center,
- * landing well inside its rim band rather than beyond it (for a
- * minimum-size case: `hypot(r1-2, w1/2+2) ~= 12.11px` from the source
- * center, inside its `[r1-2.5, r1+2.5]` band). The two LENS-end junctions
+ * source ring is stroked as a band of half-width `w1/2 + 2` (`markerStroke +
+ * 4`, halved), always `>= 2.5px` since `markerStroke >= 1`; the connector's
+ * own two-pass outline overshoots this flat end by exactly 2px, which is
+ * `< 2.5` (so `< w1/2 + 2`) for every `strokeWidth`, because both bands are
+ * floored by the shared `+4` halo constant, not by the stroke weight itself.
+ * This is also why `render.ts` deliberately never sets `ctx.lineJoin`: even
+ * the sharpest inherited join (miter, whose tip at `lineWidth = 4` extends
+ * `4 / (2*sin45deg) ~= 2.83px` beyond a right-angle corner — past the
+ * `~2.5px` band floor on its own) stays covered at `source[0]`/`source[1]`,
+ * because each corner's miter bisector points radially INWARD, toward the
+ * source circle's own center, landing well inside its rim band rather than
+ * beyond it. Worked example at the M stroke preset (`strokeWidth = 6`,
+ * `markerStroke = max(1, 6 * MAGNIFIER_MARKER_STROKE_RATIO) = 5.4` since the
+ * magnifier UX brush-up, 2026-08-06, retuned that ratio 0.6 -> 0.9 — was
+ * `markerStroke = 3.6`, `hypot(11.5, 3.8) ~= 12.11px`, band
+ * `[r1-3.8, r1+3.8] = [9.7, 17.3]` before), for a minimum-size source
+ * (`r1 = 13.5`): `hypot(r1-2, w1/2+2) = hypot(11.5, 4.7) ~= 12.42px` from the
+ * source center, inside its own `[r1-(w1/2+2), r1+(w1/2+2)] = [8.8, 18.2]`
+ * band — still inside, with more margin than the pre-brush-up example, since
+ * the band widened by exactly as much as the miter's own reach did (both
+ * terms scale with `markerStroke`). The two LENS-end junctions
  * (where the straight side edges meet the arc) need a different argument,
  * since there is no corner there to have a miter at all: those junctions sit
  * exactly ON the lens rim by construction (the arc IS the rim), buried under
@@ -529,9 +546,10 @@ export function defaultSourceRadius(canvasSize: { w: number; h: number }, limits
  * Component-wise clamp of a point into `[0, W] x [0, H]` — keeps a point
  * from landing outside the bitmap entirely. Used by `magnifierSlideUpdate`
  * (below) to clamp the SOURCE center during creation; deliberately NOT used
- * for the `src-move` handle drag on an already-committed magnifier (see that
- * call site's own comment) or for any other annotation's move/drag, which
- * stay unclamped by this app's general "never clamp annotations" policy.
+ * for the source-body drag on an already-committed magnifier (canvas.ts's
+ * `onMove`, via `translateAnnotation(a, dx, dy, "source")` — see that call
+ * site's own comment) or for any other annotation's move/drag, which stay
+ * unclamped by this app's general "never clamp annotations" policy.
  */
 export function clampPointToCanvas(p: Point, canvasSize: { w: number; h: number }): Point {
   return {
@@ -566,11 +584,13 @@ export function clampPointToCanvas(p: Point, canvasSize: { w: number; h: number 
  * `clampSampleRect`, exactly as crop's partial-overlap case already does)
  * while ruling out the fully-empty dead end. This does NOT reopen the
  * "never clamp annotations" question for the general case: once committed,
- * the `src-move` handle drag (resize.ts's `applyMagnifierResize`) sets
- * `from = pointer` UNCLAMPED, deliberately — that is a user-steered edit of
- * an existing, undoable annotation, not a creation gesture, so the general
- * policy applies there unchanged. If that ever needs to change, reuse
- * `clampPointToCanvas` rather than re-deriving the same clamp.
+ * the source-body drag (canvas.ts's `onMove`, hit-tested by hittest.ts's
+ * `magnifierHitPart` and applied via `translateAnnotation(a, dx, dy,
+ * "source")`) sets `from` to track the pointer UNCLAMPED, deliberately —
+ * that is a user-steered edit of an existing, undoable annotation, not a
+ * creation gesture, so the general policy applies there unchanged. If that
+ * ever needs to change, reuse `clampPointToCanvas` rather than re-deriving
+ * the same clamp.
  */
 export function magnifierSlideUpdate(
   p: Point,

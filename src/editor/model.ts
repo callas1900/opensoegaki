@@ -159,15 +159,25 @@ export function nextId(): string {
   return `a${Date.now().toString(36)}${(counter++).toString(36)}`;
 }
 
+/** Which half of a magnifier a body drag targets — see hittest.ts's magnifierHitPart(). */
+export type MagnifierPart = "lens" | "source";
+
 /**
  * Return a new annotation shifted by (dx, dy); never mutates the input.
  *
  * `part` only matters for "magnifier": "all" (the default, used by crop /
  * resize re-anchor / text re-anchor — all rigid moves) shifts both `from` and
  * `at`; "lens" shifts only `at`, i.e. dragging the lens body moves the lens
- * without changing what it magnifies. Every other kind ignores `part`.
+ * without changing what it magnifies; "source" shifts only `from`, i.e.
+ * dragging the source disc pans what's magnified without moving the lens.
+ * Every other kind ignores `part`.
  */
-export function translateAnnotation(a: Annotation, dx: number, dy: number, part: "all" | "lens" = "all"): Annotation {
+export function translateAnnotation(
+  a: Annotation,
+  dx: number,
+  dy: number,
+  part: "all" | MagnifierPart = "all",
+): Annotation {
   switch (a.kind) {
     case "arrow":
       return {
@@ -191,6 +201,7 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number, part:
       return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
     case "magnifier":
       if (part === "lens") return { ...a, at: { x: a.at.x + dx, y: a.at.y + dy } };
+      if (part === "source") return { ...a, from: { x: a.from.x + dx, y: a.from.y + dy } };
       return {
         ...a,
         from: { x: a.from.x + dx, y: a.from.y + dy },

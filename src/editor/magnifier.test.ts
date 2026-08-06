@@ -366,7 +366,7 @@ describe("magnifierSizeLimits", () => {
     // shortSide=4000: SOURCE_SHORT_SIDE_CAP*shortSide=600, maxLens=0.45*4000=1800 —
     // both caps are far above the CSS-scaled minima below, so they don't bite.
     const limits = magnifierSizeLimits({ w: 5000, h: 4000 }, 2);
-    expect(limits.minSource).toBeCloseTo(16 * 2); // MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX * scale
+    expect(limits.minSource).toBeCloseTo(20 * 2); // MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX * scale
     expect(limits.minLens).toBeCloseTo(28 * 2); // MIN_MAGNIFIER_LENS_RADIUS_CSS_PX * scale
     expect(limits.maxLens).toBeCloseTo(1800);
   });
@@ -462,17 +462,17 @@ describe("defaultSourceRadius", () => {
 
   it("the operability floor (limits.minSource) wins when the CSS-scaled minimum exceeds the nominal fraction — e.g. a large photo shown small on a phone", () => {
     // canvasSize {w:2000,h:1600}: 0.06*2000=120, 0.15*1600=240 -> nominal = 120.
-    // At scale=10, limits.minSource = max(2, min(16*10=160, 0.15*1600=240)) = 160 > 120.
+    // At scale=10, limits.minSource = max(2, min(20*10=200, 0.15*1600=240)) = 200 > 120.
     const canvasSize = { w: 2000, h: 1600 };
     const limits = magnifierSizeLimits(canvasSize, 10);
-    expect(limits.minSource).toBeCloseTo(160);
-    expect(defaultSourceRadius(canvasSize, limits)).toBeCloseTo(160);
+    expect(limits.minSource).toBeCloseTo(200);
+    expect(defaultSourceRadius(canvasSize, limits)).toBeCloseTo(200);
   });
 });
 
 describe("deriveLensSizeForSource", () => {
   const canvasSize = { w: 1000, h: 800 }; // longSide=1000, shortSide=800
-  const limits = magnifierSizeLimits(canvasSize, 1); // minSource=16, minLens=28, maxLens=360
+  const limits = magnifierSizeLimits(canvasSize, 1); // minSource=20, minLens=28, maxLens=360
 
   it("first pass (no radius clamp): targetRadius derives zoom and radius directly", () => {
     // targetRadius = min(0.30 * 1000/2, limits.maxLens=360) = min(150, 360) = 150
@@ -524,7 +524,7 @@ describe("deriveLensSizeForSource", () => {
       { sourceRadius: 30, size: "M", canvasSize: { w: 1000, h: 800 }, scale: 1 },
       { sourceRadius: 20, size: "S", canvasSize: { w: 1000, h: 800 }, scale: 1 },
       { sourceRadius: 500, size: "L", canvasSize: { w: 1000, h: 800 }, scale: 1 },
-      { sourceRadius: 57, size: "M", canvasSize: { w: 1170, h: 2532 }, scale: 3.55 }, // design note's iPhone sanity check
+      { sourceRadius: 72, size: "M", canvasSize: { w: 1170, h: 2532 }, scale: 3.55 }, // design note's iPhone sanity check (minSource = 20*3.55 = 71)
       { sourceRadius: 15, size: "S", canvasSize: { w: 100, h: 80 }, scale: 10 },
       { sourceRadius: 2000, size: "L", canvasSize: { w: 4000, h: 3000 }, scale: 0.1 },
     ];
@@ -608,9 +608,10 @@ describe("magnifierSlideUpdate", () => {
   });
 
   // Review round 2 ruling: from IS clamped during a slide (clampPointToCanvas),
-  // unlike a committed magnifier's src-move handle drag (resize.ts), which
-  // stays unclamped — see magnifierSlideUpdate's doc comment for the
-  // create-vs-edit distinction. Per-axis clamping is already covered directly
+  // unlike a committed magnifier's source-body drag (canvas.ts's onMove, via
+  // translateAnnotation(a, dx, dy, "source")), which stays unclamped — see
+  // magnifierSlideUpdate's doc comment for the create-vs-edit distinction.
+  // Per-axis clamping is already covered directly
   // by clampPointToCanvas's own tests above; this integration test keeps only
   // the off-corner case, which additionally pins that this wrapper applies
   // the clamp on both axes at once, not just delegates to it.

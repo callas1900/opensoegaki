@@ -76,7 +76,7 @@ const SOURCE_RADIUS_FRACTION = 0.06; // MAGNIFIER_SOURCE_RADIUS_FRACTION
 
 // Operability size limits (Addendum B, 2026-08-02) — mirrors magnifierSizeLimits.
 const MIN_SOURCE_RADIUS_PX = 2; // MIN_MAGNIFIER_SOURCE_RADIUS_PX (absolute backstop)
-const MIN_SOURCE_RADIUS_CSS_PX = 16; // MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX
+const MIN_SOURCE_RADIUS_CSS_PX = 20; // MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX (16 -> 20, magnifier UX brush-up)
 const MIN_LENS_RADIUS_CSS_PX = 28; // MIN_MAGNIFIER_LENS_RADIUS_CSS_PX
 const SOURCE_SHORT_SIDE_CAP = 0.15; // MAGNIFIER_SOURCE_SHORT_SIDE_CAP
 const MAX_LENS_FRACTION = 0.45; // MAGNIFIER_MAX_LENS_FRACTION
@@ -175,10 +175,13 @@ test.describe("magnifier: slide-to-aim creation, auto-select, body-drag, undo", 
     // that the browser lays the canvas out at its NATIVE size (geo.scale ===
     // 1, confirmed at the console — the CSS never upscales a tiny image to
     // fill the iPhone-14 viewport), so bitmapPerCss === 1 too. At that scale
-    // the operability floor DOES bite here (unlike the design note's ">= 267
-    // CSS px long side" threshold, which assumes a canvas actually filling
-    // the viewport): shortSide=90, so minSource = max(2, min(16*1=16,
-    // 0.15*90=13.5)) = 13.5 (the short-side cap wins over the CSS term),
+    // the operability floor DOES bite here (unlike the magnifier UX brush-up
+    // design note's ">= 333 CSS px long side" threshold — was ">= 267" before
+    // MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX 16 -> 20 — which assumes a canvas
+    // actually filling the viewport): shortSide=90, so minSource = max(2,
+    // min(20*1=20, 0.15*90=13.5)) = 13.5 (the short-side cap wins over the
+    // CSS term, same result as before the floor was raised — 20 > 16 doesn't
+    // change anything once the short-side cap is already the binding term),
     // which EXCEEDS the nominal source radius (min(0.06*120,0.15*90)=7.2,
     // see defaultSourceRadius's own comment) — so defaultSourceRadius
     // returns 13.5, not 7.2. minLens = min(28,maxLens=0.45*90=40.5) = 28,
@@ -276,10 +279,17 @@ test.describe("magnifier: slide-to-aim creation, auto-select, body-drag, undo", 
     // `from=(25,25)`, `r1=sourceRadius=13.5`, and the post-drag lens at
     // `atNew=(78.5,64)`, `r2=lensRadius=28`, the trimmed axis runs
     // `p1≈(35.9,33.0)` to `p2≈(55.9,47.5)` exactly as under Addendum B/C's
-    // first cut; `w1=markerStroke≈3.6` (unchanged, narrow source end) and
-    // `w2=max(FAN_RATIO(0.6)*r2=16.8, markerStroke, strokeWidth)=16.8`,
-    // unsaturated (`MAX_LENS_WIDTH_RATIO(1.0)*r2=28 > 16.8`) — so `theta =
-    // asin(16.8/56) ≈ 17.46°`, and the lens-end ARC's two endpoints are
+    // first cut (trimmedConnectorAxis depends only on the radii/centers, not
+    // the stroke widths below, so the magnifier UX brush-up's ratio changes
+    // don't move it); `w1=markerStroke=max(1,6*0.9)=5.4` (narrow source end;
+    // was 3.6 at the old MAGNIFIER_MARKER_STROKE_RATIO=0.6) and
+    // `w2=max(FAN_RATIO(0.6)*r2=16.8, markerStroke=5.4,
+    // lensStroke=max(1,6*1.5)=9)=16.8` (the FAN term still dominates both
+    // trailing floor terms, same as before — `lensStroke` replaces the old
+    // bare `strokeWidth=6` term now that the lens border itself is
+    // `strokeWidth * MAGNIFIER_LENS_STROKE_RATIO`, but the max is unchanged
+    // either way), unsaturated (`MAX_LENS_WIDTH_RATIO(1.0)*r2=28 > 16.8`) —
+    // so `theta = asin(16.8/56) ≈ 17.46°`, and the lens-end ARC's two endpoints are
     // ≈(51.97, 55.05) (the `+n` side, toward the drag direction) and
     // ≈(61.86, 41.48) (the `-n` side). The probe is on the `-n` side, so the
     // nearest connector ink is that second endpoint, ≈45.7px away; the true
@@ -317,6 +327,234 @@ test.describe("magnifier: slide-to-aim creation, auto-select, body-drag, undo", 
     expect(colorDelta(oldCenterAfterUndo, BLACK)).toBeLessThan(20);
     const newCenterAfterUndo = await pixelAt(page, atNew.x, atNew.y);
     expect(colorDelta(newCenterAfterUndo, WHITE)).toBeLessThan(20);
+  });
+
+  test("source-body drag pans the source without moving the lens, and works even while the magnifier is unselected (magnifier UX brush-up)", async ({ page }) => {
+    // Same slide-to-aim creation gesture as the scenario above (see its
+    // step 2 comment for the full derivation): down on plain white
+    // background, slide onto the black square's center, release. Yields the
+    // same geometry as that test — sourceRadius=13.5, lensRadius=28,
+    // at=(78.5,28) — since this fixture/gesture pair is unchanged; re-derived
+    // here rather than imported, to keep this test block self-contained.
+    await page.goto("/");
+    await loadTestImage(page, SMALL_PNG_BASE64);
+
+    await page.locator('[data-tool="magnifier"]').tap();
+
+    const geo = await canvasGeometry(page);
+    const canvasAttrs = await page.locator("#canvas").evaluate((el: HTMLCanvasElement) => ({ width: el.width, height: el.height }));
+    expect(geo.scale).toBe(1);
+    const down = { x: 35, y: 45 };
+    const release = { x: 25, y: 25 };
+
+    const limits = sizeLimits(canvasAttrs.width, canvasAttrs.height, 1 / geo.scale);
+    const sourceRadius = defaultSourceRadius(canvasAttrs.width, canvasAttrs.height, limits);
+    const lensRadius = deriveLensRadius(sourceRadius, canvasAttrs.width, canvasAttrs.height, limits);
+    const atDown = placeLensE(down, sourceRadius, lensRadius);
+    const offset = { x: atDown.x - down.x, y: atDown.y - down.y };
+    const at = clampLensCenter(
+      { x: release.x + offset.x, y: release.y + offset.y },
+      lensRadius,
+      canvasAttrs.width,
+      canvasAttrs.height,
+    );
+
+    const downScreen = toScreen(geo, down.x, down.y);
+    const releaseScreen = toScreen(geo, release.x, release.y);
+    await page.mouse.move(downScreen.x, downScreen.y);
+    await page.mouse.down();
+    await page.mouse.move((downScreen.x + releaseScreen.x) / 2, (downScreen.y + releaseScreen.y) / 2, { steps: 4 });
+    await page.mouse.move(releaseScreen.x, releaseScreen.y, { steps: 4 });
+    await page.mouse.up();
+
+    // Sanity check this test's own re-derivation against the scenario above.
+    expect(sourceRadius).toBeCloseTo(13.5);
+    expect(lensRadius).toBe(28);
+    expect(at.x).toBeCloseTo(78.5);
+    expect(at.y).toBeCloseTo(28);
+    await expect(page.locator(".selection-delete")).toBeVisible(); // auto-selected on release
+
+    // A fixed probe just outside the lens's rim+halo band, on the EAST side —
+    // the source (west of the lens, at from=(25,25) initially) and its
+    // connector never reach this side before or after either drag below, so
+    // any change here would mean the LENS itself moved, not the source.
+    // lensStroke = max(1, 6*MAGNIFIER_LENS_STROKE_RATIO) = 9; halo band
+    // half-width = (lensStroke+4)/2 = 6.5; rim+halo extends to
+    // at.x + lensRadius + 6.5 = 78.5+28+6.5 = 113; 118 clears it with margin,
+    // and is still inside the 120-wide canvas.
+    const probe = { x: 118, y: 28 };
+    const probeBeforeA = await pixelAt(page, probe.x, probe.y);
+
+    // (a) WHILE SELECTED: press inside the source disc's NW quadrant (clear
+    // of the SE src-zoom grip, which sits at from + sourceRadius*(cos45,sin45)
+    // — the opposite corner) and drag. `from` moves by the exact pointer
+    // delta (translateAnnotation's "source" branch, unclamped); the press
+    // point itself is irrelevant to the result, only the delta is.
+    let from = { x: release.x, y: release.y }; // (25,25) — the black square's center
+    const pressA = { x: from.x - 0.35 * sourceRadius, y: from.y - 0.35 * sourceRadius };
+    const deltaA = { x: -15, y: -15 };
+    const finalA = { x: pressA.x + deltaA.x, y: pressA.y + deltaA.y };
+    from = { x: from.x + deltaA.x, y: from.y + deltaA.y }; // (10,10) — off the black square, plain white
+
+    const pressAScreen = toScreen(geo, pressA.x, pressA.y);
+    const finalAScreen = toScreen(geo, finalA.x, finalA.y);
+    await page.mouse.move(pressAScreen.x, pressAScreen.y);
+    await page.mouse.down();
+    await page.mouse.move((pressAScreen.x + finalAScreen.x) / 2, (pressAScreen.y + finalAScreen.y) / 2, { steps: 3 });
+    await page.mouse.move(finalAScreen.x, finalAScreen.y, { steps: 3 });
+    await page.mouse.up();
+
+    // The lens center still maps 1:1 to `from` (uniform sampling,
+    // zoom/placement-independent — see magnifier.ts's clampSampleRect doc
+    // comment): `from` is now (10,10), plain white background, so the lens
+    // center reads white — proof the SOURCE moved.
+    const lensCenterAfterA = await pixelAt(page, at.x, at.y);
+    expect(colorDelta(lensCenterAfterA, WHITE)).toBeLessThan(20);
+    // The fixed probe is unchanged — proof the LENS did not move.
+    const probeAfterA = await pixelAt(page, probe.x, probe.y);
+    expect(probeAfterA).toEqual(probeBeforeA);
+
+    // Deselect (tap a point clear of both discs) before part (b), which
+    // pins that the source-body drag also works on an UNSELECTED magnifier
+    // (design decision: "live even when the magnifier is unselected").
+    const emptyScreen = toScreen(geo, 5, 80);
+    await page.mouse.move(emptyScreen.x, emptyScreen.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.locator(".selection-delete")).not.toBeVisible();
+
+    // (b) WHILE UNSELECTED: press inside the (moved) source disc's NW
+    // quadrant again and drag back onto the black square. No resize-handle
+    // machinery is even consulted here (rotateOrResizeTarget only looks at
+    // the CURRENTLY selected annotation, which is null) — this press must
+    // resolve through the plain hitTest -> magnifierHitPart path.
+    const pressB = { x: from.x - 0.35 * sourceRadius, y: from.y - 0.35 * sourceRadius };
+    const deltaB = { x: 15, y: 15 };
+    const finalB = { x: pressB.x + deltaB.x, y: pressB.y + deltaB.y };
+    from = { x: from.x + deltaB.x, y: from.y + deltaB.y }; // back to (25,25)
+
+    const pressBScreen = toScreen(geo, pressB.x, pressB.y);
+    const finalBScreen = toScreen(geo, finalB.x, finalB.y);
+    await page.mouse.move(pressBScreen.x, pressBScreen.y);
+    await page.mouse.down();
+    await page.mouse.move((pressBScreen.x + finalBScreen.x) / 2, (pressBScreen.y + finalBScreen.y) / 2, { steps: 3 });
+    await page.mouse.move(finalBScreen.x, finalBScreen.y, { steps: 3 });
+    await page.mouse.up();
+
+    // The press-and-drag both SELECTED the magnifier (delete button back)
+    // and MOVED the source (lens center reads black again, from is back on
+    // the black square) — pinning that a source-body drag on an unselected
+    // magnifier does both in one gesture.
+    await expect(page.locator(".selection-delete")).toBeVisible();
+    const lensCenterAfterB = await pixelAt(page, at.x, at.y);
+    expect(colorDelta(lensCenterAfterB, BLACK)).toBeLessThan(20);
+  });
+
+  test("the floating delete button avoids the source disc when it's dragged NE of the lens, and stays functional after moving", async ({ page }) => {
+    // Same slide-to-aim creation gesture as the two scenarios above — see
+    // the first test's step 2 comment for the full derivation. Yields
+    // sourceRadius=13.5, lensRadius=28, at=(78.5,28), from=(25,25).
+    await page.goto("/");
+    await loadTestImage(page, SMALL_PNG_BASE64);
+
+    await page.locator('[data-tool="magnifier"]').tap();
+
+    let geo = await canvasGeometry(page);
+    const canvasAttrs = await page.locator("#canvas").evaluate((el: HTMLCanvasElement) => ({ width: el.width, height: el.height }));
+    expect(geo.scale).toBe(1);
+    const down = { x: 35, y: 45 };
+    const release = { x: 25, y: 25 };
+
+    const limits = sizeLimits(canvasAttrs.width, canvasAttrs.height, 1 / geo.scale);
+    const sourceRadius = defaultSourceRadius(canvasAttrs.width, canvasAttrs.height, limits);
+    const lensRadius = deriveLensRadius(sourceRadius, canvasAttrs.width, canvasAttrs.height, limits);
+    const atDown = placeLensE(down, sourceRadius, lensRadius);
+    const offset = { x: atDown.x - down.x, y: atDown.y - down.y };
+    const at = clampLensCenter(
+      { x: release.x + offset.x, y: release.y + offset.y },
+      lensRadius,
+      canvasAttrs.width,
+      canvasAttrs.height,
+    );
+
+    const downScreen = toScreen(geo, down.x, down.y);
+    const releaseScreen = toScreen(geo, release.x, release.y);
+    await page.mouse.move(downScreen.x, downScreen.y);
+    await page.mouse.down();
+    await page.mouse.move((downScreen.x + releaseScreen.x) / 2, (downScreen.y + releaseScreen.y) / 2, { steps: 4 });
+    await page.mouse.move(releaseScreen.x, releaseScreen.y, { steps: 4 });
+    await page.mouse.up();
+
+    // Sanity check this test's own re-derivation against the sibling tests.
+    expect(sourceRadius).toBeCloseTo(13.5);
+    expect(lensRadius).toBe(28);
+    expect(at.x).toBeCloseTo(78.5);
+    expect(at.y).toBeCloseTo(28);
+    await expect(page.locator(".selection-delete")).toBeVisible(); // auto-selected on release
+
+    // Drag the source body so its center lands NE of the lens, just beyond
+    // the PADDED selection marquee's own NE corner (`SELECTION_PAD_PX`,
+    // mirrored below — canvas.ts's private constant the legacy NE button
+    // placement is offset from) — the reported layout, tightened just
+    // enough to guarantee the raw source disc actually reaches the legacy
+    // NE button rect (verified against the pre-fix code path: nearest-point
+    // distance ~8.5 CSS px, under the 13.5 CSS px raw source radius), so
+    // this test would fail against the old NE-only placement, not just
+    // against a hypothetically-tighter one. `translateAnnotation`'s
+    // "source" branch is unclamped (see the sibling source-body-drag test's
+    // part (a) comment), so `from` lands exactly there even though it's a
+    // hair off the top of this small fixture canvas — irrelevant here since
+    // this test only cares about screen-space button/disc geometry, not
+    // sampled pixel content at `from`.
+    const SELECTION_PAD_PX = 6; // mirrors canvas.ts's private SELECTION_PAD_PX
+    const from0 = { x: release.x, y: release.y }; // (25,25)
+    const cornerOffset = lensRadius + SELECTION_PAD_PX + 2;
+    const target = { x: at.x + cornerOffset, y: at.y - cornerOffset };
+    const press = { x: from0.x - 0.35 * sourceRadius, y: from0.y - 0.35 * sourceRadius }; // NW quadrant of the source disc, clear of the SE src-zoom grip
+    const delta = { x: target.x - from0.x, y: target.y - from0.y };
+    const final = { x: press.x + delta.x, y: press.y + delta.y };
+
+    geo = await canvasGeometry(page); // re-read: defensive, matches the sibling tests' pattern
+    const pressScreen = toScreen(geo, press.x, press.y);
+    const finalScreen = toScreen(geo, final.x, final.y);
+    await page.mouse.move(pressScreen.x, pressScreen.y);
+    await page.mouse.down();
+    await page.mouse.move((pressScreen.x + finalScreen.x) / 2, (pressScreen.y + finalScreen.y) / 2, { steps: 3 });
+    await page.mouse.move(finalScreen.x, finalScreen.y, { steps: 3 });
+    await page.mouse.up();
+
+    await expect(page.locator(".selection-delete")).toBeVisible();
+
+    // The delete button must clear the (moved) source disc by the FULL
+    // enforced clearance, not just the raw disc: canvas.ts expands the
+    // avoid radius by `HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER +
+    // SELECTION_CONTROLS_MARGIN_PX` (12*2+8 = 32 CSS px, mirrored below) —
+    // the src-zoom grip's own touch hit radius, drawn on the source rim —
+    // before deciding whether a corner conflicts. Asserting against this
+    // tighter, enforced radius (not just the raw disc) catches near-misses
+    // that clear the disc itself but still land on top of the grip.
+    const sourceCenterScreen = toScreen(geo, target.x, target.y);
+    const HANDLE_HIT_PX = 12; // mirrors canvas.ts's private HANDLE_HIT_PX
+    const TOUCH_HIT_MULTIPLIER = 2; // mirrors canvas.ts's private TOUCH_HIT_MULTIPLIER
+    const SELECTION_CONTROLS_MARGIN_PX = 8; // mirrors canvas.ts's private SELECTION_CONTROLS_MARGIN_PX
+    const clearanceRadiusScreen = sourceRadius * geo.scale + HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER + SELECTION_CONTROLS_MARGIN_PX;
+    const deleteBtn = page.locator(".selection-delete");
+    const btnBox = await deleteBtn.boundingBox();
+    expect(btnBox).not.toBeNull();
+    const box = btnBox!;
+    const dx = Math.max(box.x - sourceCenterScreen.x, 0, sourceCenterScreen.x - (box.x + box.width));
+    const dy = Math.max(box.y - sourceCenterScreen.y, 0, sourceCenterScreen.y - (box.y + box.height));
+    expect(Math.hypot(dx, dy)).toBeGreaterThanOrEqual(clearanceRadiusScreen);
+
+    // Clicking the (repositioned) button still deletes through the normal
+    // deleteSelected() path: the button disappears (selection cleared) and
+    // the lens's magnified content is gone — the bitmap-px lens center now
+    // shows the plain background pixel underneath (white) instead of the
+    // (black) magnified source content.
+    await deleteBtn.click();
+    await expect(page.locator(".selection-delete")).not.toBeVisible();
+    const lensAreaAfterDelete = await pixelAt(page, at.x, at.y);
+    expect(colorDelta(lensAreaAfterDelete, WHITE)).toBeLessThan(20);
   });
 
   test("a document reset (Ctrl+N) mid-drag during magnifier creation does not throw and does not commit a phantom loupe", async ({ page }) => {

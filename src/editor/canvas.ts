@@ -5,6 +5,7 @@
 import {
   type Annotation,
   type Doc,
+  type MagnifierPart,
   type Point,
   type SizeName,
   type Tool,
@@ -22,7 +23,7 @@ import {
 import { renderAnnotations } from "./render";
 import { History, type DocSnapshot } from "./history";
 import { type Bounds, boundsOf, fontString } from "./bounds";
-import { hitTest } from "./hittest";
+import { hitTest, magnifierHitPart } from "./hittest";
 import { decodeClampedBitmap } from "./downscale";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
 import {
@@ -41,7 +42,10 @@ import {
   rotateHandleFor,
   anchorPointFor,
   nearestHandle,
+  deleteButtonCornerFor,
+  MAGNIFIER_ZOOM_HANDLE_ANGLE,
   type ResizeHandle,
+  type AvoidCircle,
 } from "./resize";
 import {
   angleOf,
@@ -68,6 +72,29 @@ const SELECTION_CONTROLS_MARGIN_PX = 8;
 const MAGNIFIER_READOUT_MARGIN_PX = 6;
 /** Magnifier zoom readout font size, in CSS px; scale-compensated at the call site. */
 const MAGNIFIER_READOUT_FONT_PX = 13;
+/**
+ * `src-zoom` grip chrome (design note "magnifier UX brush-up"), CSS px,
+ * all scale-compensated (`* cropScale()`) at the draw site (`drawZoomGrip`):
+ * a 16 px accent disc (vs HANDLE_DRAW_PX = 10 for the lens's square corner
+ * handles) with a white casing ring and three tangential ridges (perpendicular
+ * to the outward radial direction — the scrollbar-thumb / bottom-sheet grab
+ * idiom), textured so it reads as draggable at a glance and is unmistakable
+ * from the plain square handles: circle vs square, 16 vs 10 px, accent-fill+
+ * white-casing vs white-fill+accent-border, textured vs flat.
+ */
+const MAGNIFIER_ZOOM_GRIP_PX = 16;
+const MAGNIFIER_ZOOM_GRIP_CASING_PX = 2;
+const MAGNIFIER_ZOOM_GRIP_RIDGE_LEN_PX = 8;
+const MAGNIFIER_ZOOM_GRIP_RIDGE_GAP_PX = 3.5;
+const MAGNIFIER_ZOOM_GRIP_RIDGE_PX = 1.5;
+/**
+ * Opacity of the flat accent tint filling the source disc while selected
+ * (design note §5) — applied via `ctx.globalAlpha` over `PALETTE[0]`
+ * (`fillStyle`) rather than as a second hardcoded copy of the accent color in
+ * an rgba() literal. Chrome only, drawn in `drawSelectionOverlay`, never
+ * through `renderAnnotations`, so it can never reach `exportPng()`.
+ */
+const MAGNIFIER_SOURCE_TINT_ALPHA = 0.12;
 /** Crop corner handle draw size and grab radius, in CSS px; scale-compensated at the call site. */
 const HANDLE_DRAW_PX = 10;
 const HANDLE_HIT_PX = 12;
@@ -184,8 +211,11 @@ export class Editor {
   private draft: Annotation | null = null;
   // Armed while a select-tool drag is in progress; `original` is the pre-drag
   // clone so each move frame recomputes the translation from a fixed base
-  // (never incrementally), avoiding drift.
-  private move: { original: Annotation; anchor: Point; moved: boolean } | null = null;
+  // (never incrementally), avoiding drift. `part` is decided once, at grab
+  // time, by the same function (`magnifierHitPart`) that decided the hit —
+  // "all" for every non-magnifier drag and for a magnifier lens/source body
+  // drag alike (translateAnnotation ignores `part` unless kind === "magnifier").
+  private move: { original: Annotation; anchor: Point; moved: boolean; part: "all" | MagnifierPart } | null = null;
   // Armed while a select-tool resize handle drag is in progress; mirrors
   // `move` above — `original`/`bounds` are the pre-drag clone and its
   // `boundsOf`, fixed for the whole gesture so each move frame recomputes the
@@ -843,21 +873,61 @@ export class Editor {
     ctx.strokeRect(padded.x, padded.y, padded.w, padded.h);
     ctx.setLineDash([]);
 
+    if (a.kind === "magnifier") {
+      // Source-disc affordance (design note §5): tint the source disc, MINUS
+      // wherever the lens disc covers it, so the tinted region equals (to
+      // within tolerance) the region where a press actually starts a
+      // "source" drag (hittest.ts's magnifierHitPart tests the lens disc
+      // FIRST — see its doc comment), including the fully-contained case,
+      // where the tint correctly vanishes.
+      //
+      // An UN-clipped evenodd fill of a Path2D holding both full circles does
+      // NOT do this on its own: evenodd only cancels out the OVERLAP between
+      // two disjoint loops, so it independently fills the lens disc's own
+      // EXCLUSIVE interior too (every pixel inside the lens but outside the
+      // source is crossed exactly once, by the lens loop alone — odd, hence
+      // filled) — the normal case, since the lens and source are usually
+      // apart, connected only by the connector. (Round-1 review bug: an
+      // earlier version of this code used `clip()` + `destination-out` to
+      // punch the lens out instead, which is wrong on two counts —
+      // `destination-out` only erases by the fill's own alpha (12%), so 88%
+      // of the tint survives inside the overlap and the punch doesn't punch;
+      // and because this draws on the LIVE canvas after `renderAnnotations`,
+      // `destination-out` erases the actual rendered screenshot underneath,
+      // not just the tint layer, visibly holing out the picture whenever the
+      // lens is dragged onto its own source.)
+      //
+      // The CLIP is what suppresses the lens's exclusive body (nothing drawn
+      // after `clip()` can land outside the source disc at all); `evenodd` is
+      // what punches the overlap (within the clip, evenodd on both discs
+      // yields exactly source-minus-lens). Neither alone is sufficient; both
+      // together, in this order, are.
+      const sourceRadius = magnifierSourceRadius(a);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
+      ctx.clip();
+      // The two arc() calls join with an implicit straight segment (end of
+      // the first circle to the start of the second), which stays harmless
+      // only because it exactly coincides with the implicit closing segment,
+      // so the pair cancels for evenodd parity — changing a start angle,
+      // adding a third disc, or inserting closePath() between them breaks
+      // the fill.
+      const tint = new Path2D();
+      tint.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
+      tint.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
+      ctx.globalAlpha = MAGNIFIER_SOURCE_TINT_ALPHA;
+      ctx.fillStyle = PALETTE[0];
+      ctx.fill(tint, "evenodd");
+      ctx.restore();
+    }
+
     const side = HANDLE_DRAW_PX * this.cropScale();
     const half = side / 2;
     ctx.lineWidth = 1.5;
     for (const handle of resizeHandlesFor(a, b)) {
-      if (handle.shape === "circle") {
-        // Magnifier's src-move/src-zoom (resize.ts): accent fill + white ring
-        // — deliberately the INVERSE of the square handles' white-fill/accent-
-        // ring styling below, so the two handle families read as unmistakably
-        // different at a glance (design note).
-        ctx.beginPath();
-        ctx.arc(handle.pos.x, handle.pos.y, half, 0, 2 * Math.PI);
-        ctx.fillStyle = PALETTE[0];
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.95)";
-        ctx.stroke();
+      if (handle.shape === "grip") {
+        this.drawZoomGrip(ctx, handle.pos);
       } else {
         ctx.fillStyle = "rgba(255,255,255,0.95)";
         ctx.fillRect(handle.pos.x - half, handle.pos.y - half, side, side);
@@ -1030,7 +1100,63 @@ export class Editor {
 
     ctx.restore();
 
-    this.positionSelectionControls(padded, angle, knob ? knob.world : null);
+    this.positionSelectionControls(
+      padded,
+      angle,
+      knob ? knob.world : null,
+      // Fail-safe for possible future group rotation (TASK-42):
+      // `deleteButtonCornerFor` assumes an axis-aligned box, so only feed it
+      // `avoid` when the annotation is actually unrotated. True for every
+      // magnifier today (`canRotate` excludes "magnifier"), but this keeps
+      // the assumption enforced at the call site rather than silently relied
+      // on inside the helper.
+      a.kind === "magnifier" && angle === 0 ? { center: a.from, radius: magnifierSourceRadius(a) } : null,
+    );
+  }
+
+  /**
+   * Draw the `src-zoom` grip at `pos` (the rim position `resizeHandlesFor`
+   * computed — draw and hit-test both derive from that one function, so they
+   * can never disagree about where the grip is). Wrapped in its own
+   * `save()/restore()` because it sets `lineCap = "round"`, which must not
+   * leak into the marquee dash or the square resize handles drawn around it.
+   *
+   * Geometry (design note §3): an accent-filled disc with a white casing
+   * ring, plus three ridges running TANGENTIALLY (perpendicular to the
+   * outward radial direction `u`) — the scrollbar-thumb / bottom-sheet grab
+   * idiom. `u` is derived from `MAGNIFIER_ZOOM_HANDLE_ANGLE` (resize.ts) —
+   * the same angle the handle's rim position is computed from — so this
+   * never hardcodes a second copy of that constant.
+   */
+  private drawZoomGrip(ctx: CanvasRenderingContext2D, pos: Point): void {
+    const s = this.cropScale();
+    const r = (MAGNIFIER_ZOOM_GRIP_PX / 2) * s;
+    const u = { x: Math.cos(MAGNIFIER_ZOOM_HANDLE_ANGLE), y: Math.sin(MAGNIFIER_ZOOM_HANDLE_ANGLE) };
+    const t = { x: -u.y, y: u.x };
+
+    ctx.save();
+    ctx.lineCap = "round";
+
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = PALETTE[0];
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = MAGNIFIER_ZOOM_GRIP_CASING_PX * s;
+    ctx.stroke();
+
+    const halfRidge = (MAGNIFIER_ZOOM_GRIP_RIDGE_LEN_PX / 2) * s;
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = MAGNIFIER_ZOOM_GRIP_RIDGE_PX * s;
+    for (const k of [-1, 0, 1]) {
+      const rc = { x: pos.x + u.x * k * MAGNIFIER_ZOOM_GRIP_RIDGE_GAP_PX * s, y: pos.y + u.y * k * MAGNIFIER_ZOOM_GRIP_RIDGE_GAP_PX * s };
+      ctx.beginPath();
+      ctx.moveTo(rc.x - t.x * halfRidge, rc.y - t.y * halfRidge);
+      ctx.lineTo(rc.x + t.x * halfRidge, rc.y + t.y * halfRidge);
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 
   /**
@@ -1045,7 +1171,15 @@ export class Editor {
     btn.type = "button";
     btn.className = "selection-delete";
     btn.title = "Delete (Delete/Backspace)";
-    btn.textContent = "🗑";
+    btn.setAttribute("aria-label", "Delete");
+    // Feather-style "trash-2" outline icon (stroke-based, currentColor) —
+    // the emoji glyph ("🗑") it replaces rendered nearly invisible on iOS
+    // (live user feedback), an inline SVG gives crisp, theme-colorable ink.
+    btn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/>' +
+      '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+      '<path d="M10 11v6"/><path d="M14 11v6"/></svg>';
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.deleteSelected();
@@ -1076,8 +1210,30 @@ export class Editor {
    * knob itself has been clamped/flipped close to the NE corner (small or
    * heavily-rotated shapes), which the `knobWorld` clearance check below
    * covers as a second, independent trigger for the same fallback.
+   *
+   * `avoid` (magnifier only — the source disc, in WORLD/bitmap coordinates)
+   * is consulted LAST, not first: the LEGACY final position (ideal NE +
+   * viewport clamp + drop-below fallback, all below) is always computed
+   * first, exactly as if `avoid` were null. Only if THAT final rect actually
+   * collides with the (clearance-expanded) disc does this fall back to
+   * `resize.ts`'s `deleteButtonCornerFor`'s NE -> NW -> SE -> SW corner
+   * search; if the legacy rect already clears the disc — including the
+   * clamped and drop-below cases — it's used as-is, byte-identical to the
+   * pre-avoid behavior. This ordering matters: testing the IDEAL (unclamped)
+   * NE rect instead would fire the corner search on lens-near-a-stage-edge
+   * cases where the source disc isn't even nearby, just because NE alone
+   * doesn't fit the viewport — stealing the legacy clamp/drop-below fallback
+   * for a conflict that doesn't exist. `avoid` and `knobWorld` are never
+   * both non-null — magnifier is excluded from `canRotate`, so a magnifier
+   * selection never has a rotate knob — meaning the disc check and the
+   * knob-clearance check below never have to interact.
    */
-  private positionSelectionControls(paddedBounds: Bounds, angle: number, knobWorld: Point | null): void {
+  private positionSelectionControls(
+    paddedBounds: Bounds,
+    angle: number,
+    knobWorld: Point | null,
+    avoid: AvoidCircle | null,
+  ): void {
     const btn = this.ensureSelectionControls();
     const canvasRect = this.canvas.getBoundingClientRect();
     const stageRect = this.canvas.parentElement!.getBoundingClientRect();
@@ -1085,12 +1241,12 @@ export class Editor {
     const originX = canvasRect.left - stageRect.left;
     const originY = canvasRect.top - stageRect.top;
 
+    const bw = btn.offsetWidth || 30;
+    const bh = btn.offsetHeight || 30;
+
     const neLocal = rotatedCorners(paddedBounds, angle)[1];
     const neX = originX + neLocal.x * scale;
     const neY = originY + neLocal.y * scale;
-
-    const bw = btn.offsetWidth || 30;
-    const bh = btn.offsetHeight || 30;
 
     const idealLeft = neX + SELECTION_CONTROLS_MARGIN_PX;
     const idealTop = neY - SELECTION_CONTROLS_MARGIN_PX - bh;
@@ -1127,6 +1283,52 @@ export class Editor {
       // a purely horizontal clamp never brings the button into the handle's
       // row (the unclamped placement always sits entirely above it).
       top = Math.min(Math.max(neY + HANDLE_HIT_PX + SELECTION_CONTROLS_MARGIN_PX, 0), stageRect.height - bh);
+    }
+
+    // Magnifier source-disc avoidance (design note "magnifier delete button
+    // must avoid the source circle"): consulted LAST, against the legacy
+    // FINAL rect above — whichever of the ideal/clamped/dropped-below cases
+    // produced it — not the ideal (unclamped) rect — so the corner search
+    // only engages on an ACTUAL conflict with the disc, never merely because
+    // NE alone didn't fit the viewport (see this method's doc comment for
+    // why that ordering matters).
+    if (avoid) {
+      // Expand the disc by the same touch-worst-case clearance
+      // `knobTooClose` above uses (`HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER +
+      // SELECTION_CONTROLS_MARGIN_PX`, CSS px). That covers the disc itself
+      // plus the src-zoom grip's own touch hit radius (drawn ON the source
+      // rim). The zoom readout label sits beside the disc and can extend
+      // slightly beyond this clearance in extreme cases (e.g. near the
+      // minimum source radius) — acceptable, since the readout is
+      // non-interactive chrome, not a pointer target like the grip.
+      const avoidCss = {
+        center: { x: originX + avoid.center.x * scale, y: originY + avoid.center.y * scale },
+        radius: avoid.radius * scale + HANDLE_HIT_PX * TOUCH_HIT_MULTIPLIER + SELECTION_CONTROLS_MARGIN_PX,
+      };
+      const dxAvoid = Math.max(left - avoidCss.center.x, 0, avoidCss.center.x - (left + bw));
+      const dyAvoid = Math.max(top - avoidCss.center.y, 0, avoidCss.center.y - (top + bh));
+      const conflicts = Math.hypot(dxAvoid, dyAvoid) < avoidCss.radius;
+      if (conflicts) {
+        const paddedCss = {
+          x: originX + paddedBounds.x * scale,
+          y: originY + paddedBounds.y * scale,
+          w: paddedBounds.w * scale,
+          h: paddedBounds.h * scale,
+        };
+        const placed = deleteButtonCornerFor(
+          paddedCss,
+          { w: bw, h: bh },
+          SELECTION_CONTROLS_MARGIN_PX,
+          { w: stageRect.width, h: stageRect.height },
+          avoidCss,
+        );
+        if (placed) {
+          left = placed.left;
+          top = placed.top;
+        }
+        // `placed === null`: no corner clears the disc either — keep the
+        // legacy `left`/`top` as the best-effort fallback (status quo).
+      }
     }
 
     btn.style.left = `${left}px`;
@@ -1291,9 +1493,11 @@ export class Editor {
    * Resize cursor for a select-tool resize handle (TASK-29). Box handles map
    * to the matching cardinal/diagonal cursor; arrow endpoints use "move" —
    * dragging either endpoint repositions a point, not a directional resize.
-   * Magnifier's `src-move` is likewise a reposition ("move"); `src-zoom` is a
-   * radial drag, so it reuses the diagonal "nwse-resize" cursor. The lens's
-   * own corners already map through the box cases above.
+   * Magnifier's `src-zoom` is a radial drag, so it reuses the diagonal
+   * "nwse-resize" cursor. The lens's own corners already map through the box
+   * cases above; dragging the source disc body is not a resize handle at all
+   * (see hittest.ts's `magnifierHitPart`) — it inherits "move" from the
+   * ordinary `hitTest -> "move"` hover fallback, no cursor code needed here.
    */
   private cursorForResizeHandle(h: ResizeHandle): string {
     switch (h) {
@@ -1311,8 +1515,6 @@ export class Editor {
         return "ew-resize";
       case "from":
       case "to":
-        return "move";
-      case "src-move":
         return "move";
       case "src-zoom":
         return "nwse-resize";
@@ -1435,11 +1637,18 @@ export class Editor {
       }
 
       this.resize = null;
-      const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
+      const tol = this.tolerance();
+      const hit = hitTest(this.doc.annotations, p, this.ctx, tol);
       if (hit) {
         this.selectedId = hit.id;
+        // Which half of a magnifier this grab targets, decided once here by
+        // the same function (`magnifierHitPart`) that decided the hit — see
+        // `move`'s field doc comment. The `?? "lens"` fallback is defensive
+        // only (hitTest's magnifier case IS magnifierHitPart, so they cannot
+        // disagree); it must never become load-bearing.
+        const part: "all" | MagnifierPart = hit.kind === "magnifier" ? (magnifierHitPart(hit, p, tol) ?? "lens") : "all";
         // Do not push history yet: a pure click that never moves is not undoable.
-        this.move = { original: structuredClone(hit), anchor: p, moved: false };
+        this.move = { original: structuredClone(hit), anchor: p, moved: false, part };
       } else {
         this.selectedId = null;
         this.move = null;
@@ -1566,13 +1775,14 @@ export class Editor {
       }
       if (this.move.moved) {
         const original = this.move.original;
-        // A magnifier's body-drag moves the LENS only (`at`) — the source
-        // region moves exclusively through its own `src-move` handle
-        // (resize.ts). This is the design's one orthogonal assignment: body
-        // drag -> lens position, src-move handle -> source position; grabbing
-        // and dragging a magnified disc must never silently change what it
-        // magnifies.
-        const part = original.kind === "magnifier" ? "lens" : "all";
+        // Which part moves was decided once, at grab time, in onDown — see
+        // `move`'s field doc comment. A magnifier's lens body-drag moves only
+        // `at`; its source body-drag moves only `from`, UNCLAMPED (same
+        // "handle drags snap to the pointer, editing never clamps" policy
+        // resize.ts's applyMagnifierResize doc comment records for src-zoom's
+        // sibling gestures) — dragging one disc must never silently move the
+        // other.
+        const part = this.move.part;
         this.doc.annotations = this.doc.annotations.map((a) =>
           a.id === this.selectedId ? translateAnnotation(original, dx, dy, part) : a,
         );

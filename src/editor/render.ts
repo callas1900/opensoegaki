@@ -10,6 +10,17 @@ import { magnifierSourceRadius, magnifierSourceRect, magnifierLensRect, clampSam
 
 const OUTLINE = "rgba(255,255,255,0.9)";
 
+// Lens-border stroke weight relative to strokeWidth (floored at 1px) — the
+// magnifier's PRIMARY frame weight (design note "magnifier UX brush-up",
+// 2026-08-06): the S/M/L stroke picker is the user's only weight lever, and
+// at the pre-brush-up ratio (strokeWidth verbatim) the lens border read as a
+// hairline on a large capture. 1.5× thickens it uniformly across every size.
+// `MAGNIFIER_MARKER_STROKE_RATIO` (below) is defined relative to THIS ratio,
+// not to `strokeWidth` directly, so the marker layer (source ring + connector
+// narrow end) keeps its fixed 0.6:1 relationship to the lens border at every
+// stroke width.
+export const MAGNIFIER_LENS_STROKE_RATIO = 1.5;
+
 // Marker-layer stroke weight relative to strokeWidth (floored at 1px) — the
 // source ring's weight, AND the source<->lens connector's NARROW (source)
 // end weight only. (Addendum C, 2026-08-02a §8: the connector's WIDE (lens)
@@ -18,8 +29,12 @@ const OUTLINE = "rgba(255,255,255,0.9)";
 // hittest.ts's source-ring hit band uses the exact same weight the ring is
 // actually drawn at — one owner for "how thick is the ring / the connector's
 // narrow tip". Renamed from `MAGNIFIER_SOURCE_STROKE_RATIO` (Addendum B,
-// 2026-08-02); value unchanged throughout.
-export const MAGNIFIER_MARKER_STROKE_RATIO = 0.6;
+// 2026-08-02). 0.6 -> 0.9 (design note "magnifier UX brush-up", 2026-08-06,
+// alongside MAGNIFIER_LENS_STROKE_RATIO above): still exactly 0.6 × the lens
+// border (`0.9 / 1.5 = 0.6`), preserving the marker/frame weight relationship
+// the connector's flushness arithmetic (magnifier.ts's `connectorShape` doc
+// comment) depends on.
+export const MAGNIFIER_MARKER_STROKE_RATIO = 0.9;
 
 // The connector's lens-end APERTURE, as a fraction of the lens radius itself
 // (Addendum C §8, 2026-08-02a — supersedes §2's `Math.max(markerStroke,
@@ -277,6 +292,12 @@ function drawMagnifier(ctx: CanvasRenderingContext2D, a: MagnifierAnnotation, ba
   // Marker-layer stroke weight, shared by the connector (below) and the
   // source ring (step 2) — computed once so the two can never drift apart.
   const markerStroke = Math.max(1, a.strokeWidth * MAGNIFIER_MARKER_STROKE_RATIO);
+  // Lens-border stroke weight (design note "magnifier UX brush-up"),
+  // computed once and shared by both lens-border passes (step 4) AND the
+  // connector's wide-end floor (step 1) — one owner, so the border and the
+  // connector's wide end can never drift apart the way `markerStroke` above
+  // already guarantees for the narrow end.
+  const lensStroke = Math.max(1, a.strokeWidth * MAGNIFIER_LENS_STROKE_RATIO);
 
   // 1. Connector, underneath both rings — a wedge that fans out toward the
   // lens (Addendum C, 2026-08-02a §8; was a flat-ended tapered quad earlier
@@ -285,13 +306,16 @@ function drawMagnifier(ctx: CanvasRenderingContext2D, a: MagnifierAnnotation, ba
   // for the taper to be "much more extreme" than the first Addendum-C build.
   // Narrow (source) end = markerStroke, UNCHANGED from the first cut. Wide
   // (lens) end is no longer weight-anchored at all: `Math.max(
-  // MAGNIFIER_CONNECTOR_FAN_RATIO * a.radius, markerStroke, a.strokeWidth)`
-  // — the fan term is the one that actually matters (it dwarfs the other two
-  // for any realistic lens), and the trailing `markerStroke`/`a.strokeWidth`
+  // MAGNIFIER_CONNECTOR_FAN_RATIO * a.radius, markerStroke, lensStroke)` —
+  // the fan term is the one that actually matters (it dwarfs the other two
+  // for any realistic lens), and the trailing `markerStroke`/`lensStroke`
   // terms exist only as a floor so the wide end never becomes narrower than
   // the narrow one on a pathologically tiny lens (same monotonicity
   // guarantee the earlier `Math.max` already made, just extended to a third
-  // term). The GEOMETRIC cap that keeps this width sane relative to the lens
+  // term; `lensStroke` replaces the old bare `a.strokeWidth` floor now that
+  // the lens border itself is `a.strokeWidth * MAGNIFIER_LENS_STROKE_RATIO`,
+  // not `a.strokeWidth` — the floor tracks what actually gets drawn). The
+  // GEOMETRIC cap that keeps this width sane relative to the lens
   // itself (`MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO`) is applied INSIDE
   // `connectorShape`, not here — this expression is the uncapped editorial
   // request, and the cap is a separate, differently-owned concern (see that
@@ -302,7 +326,7 @@ function drawMagnifier(ctx: CanvasRenderingContext2D, a: MagnifierAnnotation, ba
     a.at,
     a.radius,
     markerStroke,
-    Math.max(MAGNIFIER_CONNECTOR_FAN_RATIO * a.radius, markerStroke, a.strokeWidth),
+    Math.max(MAGNIFIER_CONNECTOR_FAN_RATIO * a.radius, markerStroke, lensStroke),
   );
   if (connector) {
     const { source, lens } = connector;
@@ -359,13 +383,15 @@ function drawMagnifier(ctx: CanvasRenderingContext2D, a: MagnifierAnnotation, ba
     ctx.restore();
   }
 
-  // 4. Lens border, last — over the clipped content so the stroke isn't half-clipped.
+  // 4. Lens border, last — over the clipped content so the stroke isn't
+  // half-clipped. `lensStroke` (computed once above) replaces the bare
+  // `a.strokeWidth` this used pre-brush-up — see MAGNIFIER_LENS_STROKE_RATIO.
   const lensPath = new Path2D();
   lensPath.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
   ctx.strokeStyle = OUTLINE;
-  ctx.lineWidth = a.strokeWidth + 4;
+  ctx.lineWidth = lensStroke + 4;
   ctx.stroke(lensPath);
   ctx.strokeStyle = a.color;
-  ctx.lineWidth = a.strokeWidth;
+  ctx.lineWidth = lensStroke;
   ctx.stroke(lensPath);
 }

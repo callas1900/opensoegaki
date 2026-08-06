@@ -530,28 +530,57 @@ source ring and connector still draw so the user can see the loupe and drag
 it back. Nothing is auto-deleted or clamped into the image, consistent with
 the crop policy documented above.
 
-**Selection & the one orthogonal handle assignment.**
+**Selection & the one orthogonal handle assignment (revised by the "magnifier
+UX brush-up" design note, 2026-08-06 — the `src-move` handle is deleted; the
+whole source disc is now a drag surface, live even when the magnifier is
+unselected).**
 
 | Gesture | Effect | Field changed |
 | --- | --- | --- |
 | Drag the lens body | Moves the lens only | `at` |
 | Drag a lens corner handle (existing `nw`/`ne`/`sw`/`se`, on the lens's bounding square) | Resizes the lens at fixed zoom, center-pinned | `radius` |
-| Drag `src-move` (new round handle at `from`) | Moves the source region | `from` |
-| Drag `src-zoom` (new round handle at 45° on the source rim) | Changes zoom at fixed lens radius | `zoom` |
+| Press/drag anywhere inside the source disc (selected or not) | Moves the source region | `from` |
+| Drag `src-zoom` (round grip at 45° on the source rim, selected only) | Changes zoom at fixed lens radius | `zoom` |
 
 Every degree of freedom has exactly one control, and every control has
 exactly one meaning — grabbing and dragging a magnified disc must never
-silently change what it magnifies. `canvas.ts`'s select-tool move branch is
-the only caller that passes `translateAnnotation(a, dx, dy, "lens")`; crop,
-resize re-anchor, and text re-anchor keep the default `"all"`. `resize.ts`
-adds two new `ResizeHandle` ids (`"src-move"`, listed first in
-`resizeHandlesFor` so it wins exact ties in `nearestHandle`; `"src-zoom"`)
-and an optional `HandleSpec.shape?: "square" | "circle"` so `canvas.ts`'s
-`drawSelectionOverlay` can draw the two round source handles (accent fill +
-white ring) visibly distinct from the square box/corner handles (white fill
-+ accent ring) used everywhere else. A small `"2.4×"` zoom readout (one
-decimal, trailing `.0` trimmed) is drawn beside the source ring in
-`drawSelectionOverlay` only — selection chrome, never exported.
+silently change what it magnifies. `hittest.ts`'s `magnifierHitPart(a, p,
+tolerance)` is the one owner of "which disc did the pointer land on" (lens
+disc first, source disc second — paint order; `null` if neither): `model.ts`
+exports the shared `MagnifierPart = "lens" | "source"` union so the probe's
+return type *is* `translateAnnotation`'s `part` parameter, no separate
+vocabulary or mapping layer. `canvas.ts` decides the part ONCE, at
+`pointerdown`, from this same function, and freezes it into the `move` gesture
+state for the whole drag — the earlier `original.kind === "magnifier" ? "lens"
+: "all"` derivation at `pointermove` time is gone, not left as a fallback.
+`resize.ts` now has exactly one round `ResizeHandle`, `"src-zoom"`, still
+listed FIRST in `resizeHandlesFor` so it wins exact ties in `nearestHandle`
+(now against the disc it sits on, which is itself hit-testable), and
+`HandleSpec.shape?: "square" | "grip"` (renamed from `"circle"` — with
+`src-move` gone there is exactly one non-square family). `canvas.ts`'s
+`drawSelectionOverlay` draws the grip via a dedicated `drawZoomGrip` helper
+(its own `save()`/`restore()`, since it sets `lineCap = "round"`): a 16 CSS px
+accent disc with a white casing ring and three white tangential ridges
+(perpendicular to the outward radial direction — the scrollbar-thumb grab
+idiom), replacing the plain accent-filled circle both former source handles
+used. While the magnifier is selected, `drawSelectionOverlay` also fills the
+source disc with a flat accent tint (`PALETTE[0]` at `MAGNIFIER_SOURCE_TINT_ALPHA`
+= 12%, via `ctx.globalAlpha` rather than a second hardcoded copy of the accent
+color): `clip()` to the source disc FIRST, then `evenodd`-fill a `Path2D`
+containing both the source and lens discs. The clip is what suppresses the
+lens's own exclusive body (nothing drawn after `clip()` can land outside the
+source disc at all); `evenodd` is what punches the lens-overlap out within
+that clip — the tinted region always equals the region a press actually
+starts a source drag from, including the fully-contained case, where the
+tint correctly vanishes. (Round-1 review: an earlier version used `clip()` +
+`destination-out` instead of `clip()` + `evenodd`, which was wrong on two
+counts — `destination-out` only erases by the fill's own alpha, so most of
+the tint survived inside the overlap, and it erased the live canvas's
+already-rendered content underneath, not just the tint layer, since this
+draws after `renderAnnotations`.) Chrome only, drawn before the handle loop,
+never reaches `exportPng()`. A small `"2.4×"` zoom readout (one decimal, trailing
+`.0` trimmed) is drawn beside the source ring in `drawSelectionOverlay`
+only — selection chrome, never exported.
 
 **Creation: slide-to-aim, release to confirm (Addendum A, 2026-08-01a —
 revised after real-iPhone feedback on the original radial-drag gesture).**
@@ -635,38 +664,60 @@ note's deviation note about their living in `magnifier.ts` rather than
 `resize.ts` (import-boundary reasons) is now moot, since both constants are
 gone outright, replaced by the canvas/scale-relative `magnifierSizeLimits`
 below. `MAGNIFIER_SOURCE_STROKE_RATIO` is renamed
-`MAGNIFIER_MARKER_STROKE_RATIO` (same value, `0.6`); as of Addendum C
-(2026-08-02a) it governs the source ring and the connector's **narrow**
-(source) end only — the connector's wide (lens) end instead tracks
-`MAGNIFIER_CONNECTOR_FAN_RATIO × a.radius` (see the connector paragraph
-above). Still exported from `render.ts` — the module that actually draws the
-ring — and imported by `hittest.ts`, so the ring's hit-test band always
-matches the weight it's actually drawn at (the connector itself stays
-deliberately not hit-testable): one owner, two consumers, no drift between
-what's drawn and what's clickable. `MAGNIFIER_CONNECTOR_FAN_RATIO` (`0.6`,
-`render.ts`) and `MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO` (`1.0`,
-`magnifier.ts`) are deliberately two different constants in two different
-files even though both bound the same `w2` value: the first is the
-EDITORIAL aperture the connector aims for, the second is the GEOMETRIC
-domain bound `connectorShape`'s own `asin` math requires — neither is
-derivable from the other, so neither owns the other.
+`MAGNIFIER_MARKER_STROKE_RATIO`; as of Addendum C (2026-08-02a) it governs the
+source ring and the connector's **narrow** (source) end only — the
+connector's wide (lens) end instead tracks `MAGNIFIER_CONNECTOR_FAN_RATIO ×
+a.radius` (see the connector paragraph above). Still exported from
+`render.ts` — the module that actually draws the ring — and imported by
+`hittest.ts`, so the ring's hit-test band always matches the weight it's
+actually drawn at (the connector itself stays deliberately not hit-testable):
+one owner, two consumers, no drift between what's drawn and what's clickable.
+**Frame weight (magnifier UX brush-up, 2026-08-06):** the lens border read as
+a hairline on a large capture at the pre-brush-up ratio (`strokeWidth`
+verbatim), and the S/M/L stroke picker is the user's only weight lever, so
+`render.ts` gained `MAGNIFIER_LENS_STROKE_RATIO = 1.5` as the lens border's
+own weight (`lensStroke = max(1, strokeWidth * 1.5)`, computed once in
+`drawMagnifier` and shared by both border passes AND the connector's wide-end
+floor), and `MAGNIFIER_MARKER_STROKE_RATIO` moved `0.6 -> 0.9` — still
+exactly `0.6 ×` the lens border at every stroke width, preserving the ratio
+the connector's flushness arithmetic depends on (S/M/L lens border / source
+ring, bitmap px, `docScale` 1: `4.5/2.7`, `9/5.4`, `18/10.8` — was `3/1.8`,
+`6/3.6`, `12/7.2`). This is a deliberate, stated pixel change to every
+existing magnifier's exported output (thicker frames) — not a violation of
+TASK-48 AC#6 ("stored data never mutated"), whose subject is geometry/stored
+data, not pixel-identical rendering across releases; the reading is recorded
+in TASK-48's notes. `MAGNIFIER_CONNECTOR_FAN_RATIO` (`0.6`, `render.ts`) and
+`MAGNIFIER_CONNECTOR_MAX_LENS_WIDTH_RATIO` (`1.0`, `magnifier.ts`) are
+deliberately two different constants in two different files even though both
+bound the same `w2` value: the first is the EDITORIAL aperture the connector
+aims for, the second is the GEOMETRIC domain bound `connectorShape`'s own
+`asin` math requires — neither is derivable from the other, so neither owns
+the other.
 
 `clampLensCenter` (magnifier.ts, Addendum A) is the one owner of "keep the
 lens fully on canvas": `placeLens`'s clamp-fallback (no candidate direction
 fit) and `magnifierSlideUpdate`'s per-frame clamp both call it instead of
 re-deriving the same `[R, W-R] x [R, H-R]` clamp independently.
 
-**Operability limits (Addendum B, 2026-08-02).** Real-iPhone feedback: a
-source ring shrunk near its old 2-bitmap-px sampling floor becomes smaller
-than its own two handles (`src-move`/`src-zoom`), so the loupe becomes
-practically uneditable — worse on a large photo shown small on a phone, where
-even a modest bitmap-px floor is a sub-3-CSS-px target. The fix follows the
-principle this codebase already uses for every other operability threshold
-(`BASE_TOL_PX`, `HANDLE_HIT_PX`, `MAGNIFIER_READOUT_*`): **minima are CSS px,
-scale-compensated at the call site with `canvas.ts`'s `cropScale()`
-(finger-relative); maxima stay canvas-relative (image-relative)** — a thing
-is "too small" relative to a fingertip, "too big" relative to the picture it
-sits on. `magnifierSizeLimits(canvasSize, scale)` (magnifier.ts) is the one
+**Operability limits (Addendum B, 2026-08-02; floor raised by the magnifier UX
+brush-up, 2026-08-06).** Real-iPhone feedback: a source ring shrunk near its
+old 2-bitmap-px sampling floor becomes smaller than its own controls, so the
+loupe becomes practically uneditable — worse on a large photo shown small on
+a phone, where even a modest bitmap-px floor is a sub-3-CSS-px target. The fix
+follows the principle this codebase already uses for every other operability
+threshold (`BASE_TOL_PX`, `HANDLE_HIT_PX`, `MAGNIFIER_READOUT_*`): **minima
+are CSS px, scale-compensated at the call site with `canvas.ts`'s
+`cropScale()` (finger-relative); maxima stay canvas-relative
+(image-relative)** — a thing is "too small" relative to a fingertip, "too
+big" relative to the picture it sits on. `MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX`
+moved `16 -> 20` in the brush-up: the old rationale (two point handles
+`src-move`/`src-zoom` needing clear space between them) died with
+`src-move`; the new one is that the `src-zoom` grip's 24 CSS px touch hit
+radius eats into the source disc — now the drag surface — from the rim, so
+`minSource = 20` keeps a `2*20 - 24 = 16` CSS px always-draggable lune (vs 8
+at the old floor). Cost: TASK-46 AC#12's aspect-independence threshold moves
+from `>= 267` to `>= 333` CSS px long side (`20 / 0.06`).
+`magnifierSizeLimits(canvasSize, scale)` (magnifier.ts) is the one
 owner of the resulting three bounds (`minSource`, `minLens`, `maxLens`);
 `defaultSourceRadius`, `deriveLensSizeForSource`, `clampZoom` (magnifier.ts)
 and every resize enforcement site (`resize.ts`'s `applyResize`, now taking a

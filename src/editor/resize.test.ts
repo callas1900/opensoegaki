@@ -6,6 +6,7 @@ import {
   applyResize,
   rotateHandleFor,
   anchorPointFor,
+  deleteButtonCornerFor,
   MIN_RECT_PX,
   MIN_IMAGE_PX,
   MIN_ARROW_LEN,
@@ -143,21 +144,20 @@ describe("resizeHandlesFor", () => {
     expect(resizeHandlesFor(h, b)).toEqual([]);
   });
 
-  it("magnifier: 6 handles — src-move and src-zoom (circles) FIRST, then the 4 lens corners (squares) on the lens bounding box", () => {
+  it("magnifier: 5 handles — src-zoom (grip) FIRST, then the 4 lens corners (squares) on the lens bounding box", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3); // sourceRadius = 20
     const b = boundsOf(m, measure); // lens bounding square: x140 y90 w120 h120
     const handles = resizeHandlesFor(m, b);
-    expect(handles.map((h) => h.id)).toEqual(["src-move", "src-zoom", "nw", "ne", "sw", "se"]);
+    expect(handles.map((h) => h.id)).toEqual(["src-zoom", "nw", "ne", "sw", "se"]);
 
-    expect(handles[0]).toEqual({ id: "src-move", pos: { x: 50, y: 50 }, shape: "circle" });
-    const srcZoom = handles[1];
-    expect(srcZoom.shape).toBe("circle");
+    const srcZoom = handles[0];
+    expect(srcZoom.shape).toBe("grip");
     expect(srcZoom.pos.x).toBeCloseTo(50 + 20 * Math.cos(MAGNIFIER_ZOOM_HANDLE_ANGLE));
     expect(srcZoom.pos.y).toBeCloseTo(50 + 20 * Math.sin(MAGNIFIER_ZOOM_HANDLE_ANGLE));
 
     expect(byId(handles, "nw")).toEqual({ x: 140, y: 90 });
     expect(byId(handles, "se")).toEqual({ x: 260, y: 210 });
-    // Corner handles don't opt into the circle shape (default/undefined = square).
+    // Corner handles don't opt into the grip shape (default/undefined = square).
     expect(handles.find((h) => h.id === "nw")!.shape).toBeUndefined();
   });
 });
@@ -223,19 +223,19 @@ describe("nearestHandle", () => {
     expect(handleAt(handles, { x: 200, y: 175 }, HIT_RADIUS)).toBeNull();
   });
 
-  // Magnifier's `src-move` is deliberately listed FIRST in resizeHandlesFor
+  // Magnifier's `src-zoom` is deliberately listed FIRST in resizeHandlesFor
   // (design note) so it wins EXACT ties against another handle at the same
   // distance — this pins the underlying nearestHandle property that ordering
   // relies on: iterating in list order with a strict `<` comparison means an
   // exact tie always favors the earlier-listed handle.
   it("exact tie between two handles at equal distance: the earlier-listed one wins", () => {
     const tieHandles: HandleSpec[] = [
-      { id: "src-move", pos: { x: 50, y: 50 }, shape: "circle" },
+      { id: "src-zoom", pos: { x: 50, y: 50 }, shape: "grip" },
       { id: "nw", pos: { x: 140, y: 90 } },
     ];
     const midpoint = { x: 95, y: 70 }; // equidistant from both by construction
     const result = nearestHandle(tieHandles, midpoint, 60);
-    expect(result!.id).toBe("src-move");
+    expect(result!.id).toBe("src-zoom");
 
     // Reversing the list order flips the winner — confirms the tie-break is
     // purely "first in iteration order", not some position-based rule.
@@ -496,15 +496,15 @@ describe("applyResize: magnifier", () => {
   });
 
   it("lens corner drag clamps to lo = max(limits.minLens, zoom * limits.minSource) — limits.minLens dominates at low zoom", () => {
-    // TEST_LIMITS: minLens=28, minSource=16 -> zoom*minSource = 1.5*16 = 24 < minLens(28).
-    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 1.5);
+    // TEST_LIMITS: minLens=28, minSource=20 -> zoom*minSource = MIN_MAGNIFIER_ZOOM(1.2)*20 = 24 < minLens(28).
+    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 1.2);
     const b = boundsOf(m, measure);
     const result = applyResize(m, b, "se", { x: 205, y: 155 }, false, TEST_LIMITS) as MagnifierAnnotation; // max(5,5)=5, below the floor
     expect(result.radius).toBe(TEST_LIMITS.minLens);
   });
 
   it("lens corner drag clamps to lo — the zoom*minSource term dominates at high zoom", () => {
-    // zoom*minSource = 10*16 = 160 > minLens(28).
+    // zoom*minSource = 10*20 = 200 > minLens(28).
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 10);
     const b = boundsOf(m, measure);
     const result = applyResize(m, b, "se", { x: 201, y: 151 }, false, TEST_LIMITS) as MagnifierAnnotation;
@@ -516,16 +516,6 @@ describe("applyResize: magnifier", () => {
     const b = boundsOf(m, measure);
     const result = applyResize(m, b, "se", { x: 500000, y: 150 }, false, TEST_LIMITS) as MagnifierAnnotation;
     expect(result.radius).toBe(TEST_LIMITS.maxLens);
-  });
-
-  it("src-move: from snaps to the pointer; at/radius/zoom unchanged", () => {
-    const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
-    const b = boundsOf(m, measure);
-    const result = applyResize(m, b, "src-move", { x: 999, y: 888 }, false, TEST_LIMITS) as MagnifierAnnotation;
-    expect(result.from).toEqual({ x: 999, y: 888 });
-    expect(result.at).toEqual({ x: 200, y: 150 });
-    expect(result.radius).toBe(60);
-    expect(result.zoom).toBe(3);
   });
 
   it("src-zoom: zoom = clampZoom(radius / dist(pointer, from), a); from/at/radius unchanged", () => {
@@ -560,7 +550,6 @@ describe("applyResize: magnifier", () => {
     const b = boundsOf(m, measure);
     const before = structuredClone(m);
     applyResize(m, b, "se", { x: 999, y: 999 }, false, TEST_LIMITS);
-    applyResize(m, b, "src-move", { x: 999, y: 999 }, false, TEST_LIMITS);
     applyResize(m, b, "src-zoom", { x: 999, y: 999 }, false, TEST_LIMITS);
     expect(m).toEqual(before);
   });
@@ -675,6 +664,52 @@ describe("rotateHandleFor", () => {
   });
 });
 
+describe("deleteButtonCornerFor", () => {
+  const padded: Bounds = { x: 100, y: 100, w: 80, h: 80 };
+  const btn = { w: 30, h: 30 };
+  const margin = 8;
+  const stage = { w: 400, h: 400 };
+
+  it("avoid circle far away: NE, byte-identical to the pre-existing NE formula (left 188, top 62)", () => {
+    const result = deleteButtonCornerFor(padded, btn, margin, stage, { center: { x: 50, y: 350 }, radius: 40 });
+    expect(result).toEqual({ corner: "ne", left: 188, top: 62 });
+  });
+
+  it("avoid circle over the NE candidate: falls back to NW, and the NW rect clears the circle", () => {
+    const avoid = { center: { x: 200, y: 80 }, radius: 50 };
+    const result = deleteButtonCornerFor(padded, btn, margin, stage, avoid);
+    expect(result?.corner).toBe("nw");
+    const { left, top } = result!;
+    const dx = Math.max(left - avoid.center.x, 0, avoid.center.x - (left + btn.w));
+    const dy = Math.max(top - avoid.center.y, 0, avoid.center.y - (top + btn.h));
+    expect(Math.hypot(dx, dy)).toBeGreaterThanOrEqual(avoid.radius);
+  });
+
+  it("wide circle spanning the whole top edge: both NE and NW are covered, falls through to SE", () => {
+    const result = deleteButtonCornerFor(padded, btn, margin, stage, { center: { x: 200, y: 0 }, radius: 150 });
+    expect(result).toEqual({ corner: "se", left: 188, top: 188 });
+  });
+
+  it("huge circle engulfing all four candidates: null (caller falls back to the legacy path)", () => {
+    const result = deleteButtonCornerFor(padded, btn, margin, stage, { center: { x: 150, y: 150 }, radius: 1000 });
+    expect(result).toBeNull();
+  });
+
+  it("stage-fit precedence: NE overflows a narrow stage even with a far-away avoid circle, so NW wins", () => {
+    const narrowStage = { w: 200, h: 400 };
+    const result = deleteButtonCornerFor(padded, btn, margin, narrowStage, { center: { x: 50, y: 350 }, radius: 40 });
+    expect(result?.corner).toBe("nw");
+  });
+
+  it("boundary exactness: nearest-point distance exactly equal to the radius still qualifies (pins >=)", () => {
+    // NE rect is [188,218] x [62,92]; center (158,77) is vertically inside that
+    // y-range, so the nearest point is purely horizontal: dx = 188-158 = 30.
+    const avoid = { center: { x: 158, y: 77 }, radius: 30 };
+    const result = deleteButtonCornerFor(padded, btn, margin, stage, avoid);
+    expect(result).toEqual({ corner: "ne", left: 188, top: 62 });
+  });
+});
+
 describe("anchorPointFor", () => {
   it("rect: opposite corner for each of the 4 corner handles", () => {
     const r = rect({ x: 0, y: 0 }, { x: 100, y: 50 });
@@ -724,12 +759,11 @@ describe("anchorPointFor", () => {
     expect(anchorPointFor(h, b, "se" as never)).toEqual(pivotOf(b));
   });
 
-  it("magnifier: always the lens center `at`, for every handle (lens corners and both source handles alike)", () => {
+  it("magnifier: always the lens center `at`, for every handle (lens corners and src-zoom alike)", () => {
     const m = magnifier({ x: 200, y: 150 }, 60, { x: 50, y: 50 }, 3);
     const b = boundsOf(m, measure);
     expect(anchorPointFor(m, b, "se")).toEqual({ x: 200, y: 150 });
     expect(anchorPointFor(m, b, "nw")).toEqual({ x: 200, y: 150 });
-    expect(anchorPointFor(m, b, "src-move")).toEqual({ x: 200, y: 150 });
     expect(anchorPointFor(m, b, "src-zoom")).toEqual({ x: 200, y: 150 });
   });
 });

@@ -150,6 +150,12 @@ describe("translateAnnotation", () => {
     expect(result.from).toEqual(magnifier.from);
   });
 
+  it("magnifier (part='source'): shifts only from, leaves at untouched", () => {
+    const result = translateAnnotation(magnifier, 5, -10, "source") as MagnifierAnnotation;
+    expect(result.from).toEqual({ x: 25, y: 20 });
+    expect(result.at).toEqual(magnifier.at);
+  });
+
   it("does not mutate the input annotation", () => {
     const cases: Annotation[] = [arrow, rect, text, highlight, badge, magnifier];
     for (const a of cases) {
@@ -162,6 +168,12 @@ describe("translateAnnotation", () => {
   it("does not mutate the input annotation when part='lens'", () => {
     const before = structuredClone(magnifier);
     translateAnnotation(magnifier, 100, 100, "lens");
+    expect(magnifier).toEqual(before);
+  });
+
+  it("does not mutate the input annotation when part='source'", () => {
+    const before = structuredClone(magnifier);
+    translateAnnotation(magnifier, 100, 100, "source");
     expect(magnifier).toEqual(before);
   });
 });

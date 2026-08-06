@@ -265,7 +265,7 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
 .selection-delete {
   position: absolute; z-index: 6;
   min-width: 30px; height: 30px; border: 1px solid #45484e; border-radius: 6px;
-  background: var(--panel); color: var(--fg); font-size: 15px; cursor: pointer;
+  background: var(--panel); color: #ff7b72; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
 .selection-delete:hover { background: #3a3d42; }
