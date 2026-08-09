@@ -7,10 +7,12 @@
  * module, so it must stay a dependency-free bottom layer, exactly like
  * `bounds.ts`/`rotate.ts`.
  *
- * Authority: `MagnifierAnnotation`'s lens (`at`, `radius`), `zoom` and `from`
+ * Authority: `MagnifierAnnotation`'s lens (`at` + `radius` for a circle,
+ * `at` + `width`/`height` for a rect, "cube mode" — D1/D2), `zoom` and `from`
  * are authoritative; the source region is DERIVED (a circle of radius
- * `radius / zoom` centered on `from`) — this module is where that derivation
- * lives, so no other file re-implements "where does the source circle sit".
+ * `radius / zoom`, or a `(width/zoom) x (height/zoom)` rect, centered on
+ * `from`) — this module is where that derivation lives, so no other file
+ * re-implements "where does the source region sit".
  *
  * **Operability size limits (Addendum B, 2026-08-02) are display-scale
  * dependent, on purpose.** `magnifierSizeLimits`, below, takes a `scale`
@@ -30,7 +32,7 @@
  * out-of-range magnifier at load/render time; that would be new,
  * unrequested, data-mutating behaviour.
  */
-import type { MagnifierAnnotation, Point, SizeName } from "./model";
+import type { CircleMagnifierAnnotation, MagnifierAnnotation, Point, SizeName } from "./model";
 import { MAGNIFIER_LENS_FRACTION_PRESETS } from "./model";
 import type { Bounds } from "./bounds";
 
@@ -113,40 +115,94 @@ export const MAGNIFIER_SOURCE_SHORT_SIDE_CAP = 0.15;
 export const MAGNIFIER_MAX_LENS_FRACTION = 0.45;
 
 /**
- * The three size bounds a magnifier's lens radius / derived source radius
- * must satisfy, given the current canvas size and CSS-to-bitmap scale
- * (`cropScale()`). One owner: `defaultSourceRadius`, `deriveLensSizeForSource`,
- * and every resize enforcement site in `resize.ts` all consult this instead
- * of re-deriving the bounds independently.
+ * Smallest allowed DERIVED source half-extent for a RECT lens, CSS px
+ * (Addendum G, 2026-08-08, request (1) — "the source must shrink much
+ * further"). **NOT a fingertip floor** — unlike the circle's `minSource`,
+ * that role moved entirely to the hit target (`hittest.ts`'s
+ * `MAGNIFIER_SOURCE_MIN_HIT_HALF_PX`, `canvas.ts`'s `magnifierSourceMinHit`).
+ * This is a LEGIBILITY floor only: the source marker band (`markerStroke`,
+ * stroked CENTERED on the source rect's boundary) must not swallow the
+ * frame it draws.
+ *
+ * **User-facing why.** Pre-Addendum-G, the rect's derived source
+ * half-extent was floored at the circle's `minSource` (a fingertip size, 20
+ * CSS px) on EACH axis via `clampRectZoom`'s ceiling — on a phone
+ * screenshot at typical PWA `cropScale` that pinned the smallest source to
+ * several lines of text and capped zoom under 2x, defeating the point of a
+ * "magnify one line of text" tool. Splitting the floor into this legibility
+ * value (drawn) plus a hit-target floor (grabbable) lets the DRAWN source
+ * shrink to the size of the text it is meant to isolate while the DRAG
+ * TARGET stays finger-sized regardless — see `hittest.ts`'s
+ * `magnifierHitPart` for the other half of this split.
+ *
+ * **Accepted, documented regime (do not "fix"):** at the L stroke preset on
+ * a canvas displayed near 1:1 (`markerStroke ~= 10.8` bitmap px vs. an
+ * 8-bitmap-px minimum source SIDE at `scale = 1`), a fully-shrunk source
+ * marker paints as a solid tick rather than a visible frame. This is
+ * bounded, self-inflicted (the user picked the L stroke preset), and
+ * recoverable (pick a thinner stroke, or view the image less zoomed-in) —
+ * NOT a bug to special-case. Do NOT add a `strokeWidth`-dependent floor:
+ * `magnifierSizeLimits` is a per-canvas function, not a per-annotation one,
+ * and threading `strokeWidth` into it would break its single-owner shape
+ * (every other call site would have to start passing a stroke width it
+ * doesn't otherwise need).
+ */
+export const MIN_MAGNIFIER_RECT_SOURCE_CSS_PX = 4;
+
+/**
+ * The four size bounds a magnifier's lens radius / derived source
+ * half-extent must satisfy, given the current canvas size and CSS-to-bitmap
+ * scale (`cropScale()`). One owner: `defaultSourceRadius`,
+ * `deriveLensSizeForSource`, `deriveRectLensSize`, `clampRectZoom`, and
+ * every resize enforcement site in `resize.ts` all consult this instead of
+ * re-deriving the bounds independently.
  *
  * ```
- * shortSide = min(w, h)
- * maxLens   = MAGNIFIER_MAX_LENS_FRACTION * shortSide
- * minSource = max( MIN_MAGNIFIER_SOURCE_RADIUS_PX,
- *                   min( MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX * scale,
- *                        MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide ) )
- * minLens   = min( MIN_MAGNIFIER_LENS_RADIUS_CSS_PX * scale, maxLens )
+ * shortSide     = min(w, h)
+ * maxLens       = MAGNIFIER_MAX_LENS_FRACTION * shortSide
+ * minSource     = max( MIN_MAGNIFIER_SOURCE_RADIUS_PX,
+ *                       min( MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX * scale,
+ *                            MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide ) )
+ * minRectSource = max( MIN_MAGNIFIER_SOURCE_RADIUS_PX,
+ *                       min( MIN_MAGNIFIER_RECT_SOURCE_CSS_PX * scale,
+ *                            MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide ) )
+ * minLens       = min( MIN_MAGNIFIER_LENS_RADIUS_CSS_PX * scale, maxLens )
  * ```
+ *
+ * **`minSource` is circle-only from Addendum G (2026-08-08) onward** —
+ * every rect reader switched to `minRectSource` instead (`clampRectZoom`,
+ * `applyMagnifierBoxResize`'s `minPx`, `deriveRectLensSize`'s
+ * `sourceHalfH` floor); `minSource` itself is untouched in formula, value
+ * and meaning, still governing the circle exclusively. The two floors share
+ * the same clamp SHAPE (absolute backstop outside, canvas-relative cap
+ * inside) but different CSS-px inputs (`MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX`
+ * = 20, a fingertip size, vs. `MIN_MAGNIFIER_RECT_SOURCE_CSS_PX` = 4, a
+ * legibility size — see that constant's own doc comment for the full
+ * rationale).
  *
  * The canvas caps (`MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide`, `maxLens`)
  * keep a finger-sized floor from becoming absurd on a small image — the "hi
  * wins" clamp discipline applied to the limits themselves. Non-emptiness
- * (`minLens >= MIN_MAGNIFIER_ZOOM * minSource`) holds for every canvas size
- * and scale with the constants above; see magnifier.test.ts's table-driven
- * property test. The one exception is a degenerate regime where `minSource`
- * hits the absolute `MIN_MAGNIFIER_SOURCE_RADIUS_PX` backstop while `minLens`
- * stays small and scale-proportional (see magnifier.test.ts's dedicated
- * backstop-exception test) — but that regime requires `scale < 1`, and in the
- * running app `scale` (`canvas.ts`'s `cropScale()`) is never below 1
- * (`fitCanvasToStage` clamps its own scale factor via `Math.min(1, …)` and
- * never upscales), so with `scale >= 1` the failure can only arise when the
- * canvas's short side is under `2.4 / MAGNIFIER_MAX_LENS_FRACTION ≈ 5.33`
- * bitmap px — provably unreachable outside a pathological, near-zero-pixel
- * document.
+ * (`minLens >= MIN_MAGNIFIER_ZOOM * minSource`, and separately
+ * `minLens >= MIN_MAGNIFIER_ZOOM * minRectSource`) holds for every canvas
+ * size and scale with the constants above; see magnifier.test.ts's
+ * table-driven property tests (one per floor). The one exception is a
+ * degenerate regime where the floor hits its own absolute
+ * `MIN_MAGNIFIER_SOURCE_RADIUS_PX` backstop while `minLens` stays small and
+ * scale-proportional (see magnifier.test.ts's dedicated backstop-exception
+ * test) — but that regime requires `scale < 1`, and in the running app
+ * `scale` (`canvas.ts`'s `cropScale()`) is never below 1 (`fitCanvasToStage`
+ * clamps its own scale factor via `Math.min(1, …)` and never upscales), so
+ * with `scale >= 1` the failure can only arise when the canvas's short side
+ * is under `2.4 / MAGNIFIER_MAX_LENS_FRACTION ≈ 5.33` bitmap px (circle) or
+ * proportionally smaller still for the rect's lower CSS-px input —
+ * provably unreachable outside a pathological, near-zero-pixel document.
  */
 export interface MagnifierSizeLimits {
-  /** Smallest allowed DERIVED source radius (radius / zoom), bitmap px. */
+  /** Smallest allowed DERIVED source radius (radius / zoom), bitmap px. Circle-only. */
   minSource: number;
+  /** Smallest allowed DERIVED source half-extent per axis for a RECT lens, bitmap px (Addendum G). A legibility floor, not a fingertip floor — see `MIN_MAGNIFIER_RECT_SOURCE_CSS_PX`. */
+  minRectSource: number;
   /** Smallest allowed lens radius, bitmap px. */
   minLens: number;
   /** Largest allowed lens radius, bitmap px. */
@@ -161,27 +217,51 @@ export function magnifierSizeLimits(canvasSize: { w: number; h: number }, scale:
     MIN_MAGNIFIER_SOURCE_RADIUS_PX,
     Math.min(MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX * scale, MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide),
   );
+  const minRectSource = Math.max(
+    MIN_MAGNIFIER_SOURCE_RADIUS_PX,
+    Math.min(MIN_MAGNIFIER_RECT_SOURCE_CSS_PX * scale, MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide),
+  );
   const minLens = Math.min(MIN_MAGNIFIER_LENS_RADIUS_CSS_PX * scale, maxLens);
-  return { minSource, minLens, maxLens };
+  return { minSource, minRectSource, minLens, maxLens };
 }
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
 }
 
-/** The source circle's radius: `radius / zoom` — the one derived-geometry fact this whole module exists to own. */
-export function magnifierSourceRadius(a: MagnifierAnnotation): number {
+/**
+ * The source circle's radius: `radius / zoom` — the one derived-geometry fact
+ * this whole module exists to own. Circle-only (narrowed from
+ * `MagnifierAnnotation` when the rect variant was added, D1/D2): a rect
+ * magnifier has no single "radius", so its source region is derived
+ * per-axis instead — see `magnifierSourceRect`'s rect branch below.
+ */
+export function magnifierSourceRadius(a: CircleMagnifierAnnotation): number {
   return a.radius / a.zoom;
 }
 
-/** Bounding SQUARE of the source circle (side `2 * magnifierSourceRadius(a)`, centered on `a.from`). This is the internal sample rect — never drawn; see `drawMagnifier`'s source ring for the honest, visible marker. */
+/**
+ * Bounding rect of the source region, centered on `a.from`: a `2 *
+ * magnifierSourceRadius(a)` SQUARE for a circle magnifier, a
+ * `(width/zoom) x (height/zoom)` rect for a rect magnifier (D2) — this is
+ * the internal sample rect in both cases, never drawn as-is; see
+ * `drawMagnifier`'s source marker for the honest, visible one.
+ */
 export function magnifierSourceRect(a: MagnifierAnnotation): Bounds {
+  if (a.shape === "rect") {
+    const w = a.width / a.zoom;
+    const h = a.height / a.zoom;
+    return { x: a.from.x - w / 2, y: a.from.y - h / 2, w, h };
+  }
   const r = magnifierSourceRadius(a);
   return { x: a.from.x - r, y: a.from.y - r, w: 2 * r, h: 2 * r };
 }
 
-/** Bounding SQUARE of the lens circle (side `2 * a.radius`, centered on `a.at`). */
+/** Bounding rect of the lens, centered on `a.at`: a `2 * a.radius` SQUARE for a circle magnifier, `a.width x a.height` for a rect magnifier (D2). */
 export function magnifierLensRect(a: MagnifierAnnotation): Bounds {
+  if (a.shape === "rect") {
+    return { x: a.at.x - a.width / 2, y: a.at.y - a.height / 2, w: a.width, h: a.height };
+  }
   return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
 }
 
@@ -395,6 +475,177 @@ export function connectorShape(c1: Point, r1: number, c2: Point, r2: number, w1:
   };
 }
 
+/** Center of a `Bounds` rect. */
+function rectCenter(r: Bounds): Point {
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
+/**
+ * One connector line, `[sourceCorner, lensCorner]` — a corner of
+ * `sourceRect` joined straight to a corner of `lensRect`. Addendum G
+ * (2026-08-08, request (2): "the connector must join CORNER TO CORNER");
+ * WHICH pair of corners is chosen was replaced by Addendum H (2026-08-08,
+ * "join the FACING edges") — see `magnifierRectConnectorLines`'s own doc
+ * comment.
+ */
+export type MagnifierConnectorLine = [Point, Point];
+
+/**
+ * Rect twin of `connectorShape` (D3). Returns two straight corner-to-corner
+ * segments that join the source and lens rects' FACING edges — the classic
+ * zoom-callout look. Addendum H (2026-08-08, live iPhone feedback on
+ * Addendum G's joint-convex-hull bridges): those bridges connect the pair's
+ * SILHOUETTE, which for a lens wider than the source sitting below it draws
+ * BOTH segments from the source's TOP corners to the lens's TOP corners,
+ * grazing past the source's sides — a correct convex-hull answer and the
+ * WRONG picture. The hull-bridge construction (`connectorBridge`, deleted)
+ * is replaced outright, not patched — see `docs/design/2026-08-08-
+ * magnifier-cube-mode.md`'s Addendum H for the full ruling.
+ *
+ * 1. **Suppression guard — unchanged from Addendum G §G4, byte-identical.**
+ *    `null` when the PER-AXIS AABB rim gap (source half-extents inflated by
+ *    `w1/2`, lens half-extents un-inflated) is under
+ *    `MAGNIFIER_CONNECTOR_MIN_GAP_PX`. Nothing about the guard's own
+ *    expression or justification changed here — only what happens once it
+ *    has passed.
+ * 2. **Dominant separation axis: whichever of `gx`/`gy` is LARGER, ties to
+ *    x** (Addendum H §H1) — NOT `|Δx|` vs `|Δy|`, and NOT a normalized
+ *    ratio against the half-extents. `hypot(gx, gy) >=
+ *    MAGNIFIER_CONNECTOR_MIN_GAP_PX > 0` forces `max(gx, gy) > 0`, so THE
+ *    DOMINANT AXIS IS ALWAYS STRICTLY SEPARATED — the exact precondition
+ *    the no-ink-inside proof below needs. Choosing dominance by raw center
+ *    displacement or by a normalized ratio can select an axis whose GAP is
+ *    0 (two rects can be far apart center-to-center on an axis they still
+ *    overlap edge-to-edge on) — that would destroy the proof, which is why
+ *    gap, not displacement, decides.
+ * 3. **Facing edges, same-side pairing.** If x dominates: the source's
+ *    facing edge is its right edge when the lens is east of it, else its
+ *    left edge; the lens's facing edge is the mirror choice. Both segments
+ *    run from that one shared x-coordinate on the source side to the other
+ *    shared x-coordinate on the lens side, paired TOP-to-TOP and
+ *    BOTTOM-to-BOTTOM (never top-to-bottom — that would cross, see §H3
+ *    below). If y dominates: symmetric, LEFT-to-LEFT and RIGHT-to-RIGHT on
+ *    the shared facing horizontal edges. Return order is pinned:
+ *    `[top pair, bottom pair]` when x dominates, `[left pair, right pair]`
+ *    when y dominates.
+ * 4. **Diagonal placements use the SAME rule — there is no third regime.**
+ *    Both segments still attach to the facing edges of the larger-gap axis
+ *    and lean sideways toward the lens; this reads correctly (the source
+ *    box still visibly opens into the lens box) and stays crossing-free
+ *    (§H3 below). A dedicated diagonal case was considered and rejected —
+ *    it would add two more switching loci for no benefit.
+ *
+ * **Continuity.** The rule is continuous through every CARDINAL relation
+ * (near due-south, `gx = 0 << gy`, so a few degrees of drag never flips the
+ * answer) — the property Addendum E valued for the old tangent rule, and
+ * the direction the auto-placement gesture actually parks the lens in
+ * (`PLACEMENT_DIRS` tries E/W/S/N first). The one discontinuity is at the
+ * EXACT diagonal locus `gx === gy`, where the answer flips between the two
+ * facing-edge pairs — accepted and documented: a discrete rule must switch
+ * somewhere, and this is the least-visited locus a user's drag passes
+ * through. The tie (`gx === gy`) resolves to x (`gx >= gy`), deterministic.
+ *
+ * **The no-ink-inside invariant (B1), restated for the facing-edge
+ * construction — this is the property that must never regress. These
+ * segments are NOT supporting lines of both rects (Addendum G's hull-bridge
+ * argument no longer applies); this is a stronger, simpler SLAB argument
+ * instead. WLOG x dominates and the lens is east (`at.x > from.x`; the
+ * other three cases are mirrors/transposes of this one):**
+ *
+ * `gx > 0` gives `at.x - from.x > sourceRect.w/2 + w1/2 + lensRect.w/2`,
+ * hence `sourceRight = sourceRect.x + sourceRect.w < lensLeft =
+ * lensRect.x`, STRICTLY, with `gx + w1/2` to spare. Both returned segments
+ * have their source endpoint on the line `x = sourceRight` and their lens
+ * endpoint on `x = lensLeft`, so every point of either segment satisfies
+ * `sourceRight <= x <= lensLeft` — strictly for any point in a segment's
+ * relative interior. The source rect lies entirely in `{x <= sourceRight}`
+ * and the lens rect entirely in `{x >= lensLeft}`. Therefore EACH SEGMENT
+ * MEETS EACH RECT ONLY AT ITS OWN ENDPOINT CORNER; its relative interior is
+ * disjoint from both closed rects. This covers the case the guard permits
+ * with only ONE positive gap (`gx > 0, gy = 0` — a taller lens due east
+ * overlapping the source vertically): the segments live in the vertical
+ * SLAB between the two facing edge lines, outside both rects regardless of
+ * how much the rects overlap vertically — precisely why dominance is chosen
+ * by GAP, not by center displacement (point 2 above).
+ *
+ * The painted-ink consequence is unchanged from Addendum G and still holds
+ * verbatim: because each segment lies in a closed half-plane bounded by the
+ * rect's own facing-edge line and touches it only at the endpoint, the
+ * segment dilated by the stroke half-width intersects that rect only inside
+ * the disc of radius `(markerStroke + 4)/2` centred on the endpoint corner.
+ * The SOURCE marker's round-join disc there has exactly that radius; the
+ * LENS border's has `(lensStroke + 4)/2 >= (markerStroke + 4)/2` since
+ * `magnifierMarkerStroke(sw) = max(1, 0.9*sw) <= max(1, 1.5*sw) =
+ * lensStroke` (asserted in magnifier.test.ts, §G7 T5 — unchanged by this
+ * addendum). Both frames are painted AFTER the connector (draw order
+ * unchanged), so no connector ink survives inside either interior —
+ * independently of the lens-content pass (TASK-46 AC#6).
+ *
+ * **Crossing-freedom (§H3).** WLOG x dominant. Both segments span the SAME
+ * x-interval `[sourceRight, lensLeft]` (non-degenerate) and are affine in
+ * x: at any x, segment A (the top pair) sits at `yA(x) = lerp(sourceTop,
+ * lensTop)` and segment B (the bottom pair) at `yB(x) = lerp(sourceBottom,
+ * lensBottom)`. `sourceTop < sourceBottom` and `lensTop < lensBottom` for
+ * any positive-height rect, and a convex combination of two strict
+ * inequalities is itself strict, so `yA(x) < yB(x)` everywhere: the two
+ * segments are DISJOINT, not merely non-crossing (degenerate zero-height
+ * rects make them coincide — a harmless `Path2D` case, documented, not
+ * branched). Symmetric for the y-dominant case.
+ *
+ * Precondition (like `connectorShape`): `w1 > 0` — a negative value would
+ * make the guard's own `w1/2` inflation term negative, which is undefined
+ * behavior the caller is responsible for not producing (same "the caller's
+ * editorial choice" precedent `connectorShape`'s own `w1`/`w2` document).
+ */
+export function magnifierRectConnectorLines(
+  sourceRect: Bounds,
+  lensRect: Bounds,
+  w1: number,
+): [MagnifierConnectorLine, MagnifierConnectorLine] | null {
+  const from = rectCenter(sourceRect);
+  const at = rectCenter(lensRect);
+  const gx = Math.max(0, Math.abs(at.x - from.x) - (sourceRect.w / 2 + w1 / 2 + lensRect.w / 2));
+  const gy = Math.max(0, Math.abs(at.y - from.y) - (sourceRect.h / 2 + w1 / 2 + lensRect.h / 2));
+  if (Math.hypot(gx, gy) < MAGNIFIER_CONNECTOR_MIN_GAP_PX) return null;
+
+  if (gx >= gy) {
+    // Horizontal separation dominates (gx > 0): the facing edges are VERTICAL.
+    const east = at.x > from.x;
+    const sx = east ? sourceRect.x + sourceRect.w : sourceRect.x; // source's facing edge
+    const lx = east ? lensRect.x : lensRect.x + lensRect.w; // lens's facing edge
+    const sy1 = sourceRect.y;
+    const sy2 = sourceRect.y + sourceRect.h;
+    const ly1 = lensRect.y;
+    const ly2 = lensRect.y + lensRect.h;
+    return [
+      // [top pair, bottom pair] — pinned order
+      [
+        { x: sx, y: sy1 },
+        { x: lx, y: ly1 },
+      ],
+      [
+        { x: sx, y: sy2 },
+        { x: lx, y: ly2 },
+      ],
+    ];
+  }
+  // Vertical separation dominates (gy > 0): the facing edges are HORIZONTAL.
+  const south = at.y > from.y;
+  const sy = south ? sourceRect.y + sourceRect.h : sourceRect.y;
+  const ly = south ? lensRect.y : lensRect.y + lensRect.h;
+  return [
+    // [left pair, right pair] — pinned order
+    [
+      { x: sourceRect.x, y: sy },
+      { x: lensRect.x, y: ly },
+    ],
+    [
+      { x: sourceRect.x + sourceRect.w, y: sy },
+      { x: lensRect.x + lensRect.w, y: ly },
+    ],
+  ];
+}
+
 // Auto-placement candidate directions, in the fixed order the design note
 // requires: cardinals before diagonals (a side-by-side loupe reads more
 // clearly than a diagonal one), and within each group E/W/S/N then
@@ -411,21 +662,48 @@ const PLACEMENT_DIRS: Point[] = [
 ];
 
 /**
+ * Shared half-extents core (D5): component-wise clamp of a candidate center
+ * into `[halfW, W-halfW] x [halfH, H-halfH]` so a `2*halfW x 2*halfH` box
+ * stays fully on-canvas — an axis too narrow to hold it (`size - half <
+ * half`) falls back to that axis's canvas-center coordinate. `clampLensCenter`
+ * (circle, `halfW === halfH === radius`) and `clampRectLensCenter` (rect,
+ * independent half-extents) both delegate here — one owner of "keep the box
+ * fully on canvas", exactly like the pre-D5 `clampLensCenter` was for the
+ * circle-only case. Module-private: callers reach it through one of the two
+ * named wrappers below, matching those functions' own exported shapes.
+ */
+function clampCenterHalfExtents(center: Point, halfW: number, halfH: number, canvasSize: { w: number; h: number }): Point {
+  const clampAxis = (v: number, half: number, size: number): number => {
+    const hi = size - half;
+    if (hi < half) return size / 2;
+    return clamp(v, half, hi);
+  };
+  return { x: clampAxis(center.x, halfW, canvasSize.w), y: clampAxis(center.y, halfH, canvasSize.h) };
+}
+
+/**
  * Component-wise clamp of a candidate lens center into `[R, W-R] x [R, H-R]`
  * so the lens circle stays fully on-canvas — an axis too narrow to hold the
  * lens (`size - R < R`) falls back to that axis's canvas-center coordinate.
  * The one owner of "keep the lens fully on canvas": `placeLens`'s
  * clamp-fallback and `magnifierSlideUpdate`'s per-frame clamp (Addendum A,
  * 2026-08-01a) both call this instead of re-deriving the same clamp
- * independently.
+ * independently. Thin wrapper over `clampCenterHalfExtents` (`halfW === halfH
+ * === radius`, D5) — refactored around that shared core when the rect variant
+ * was added, but this function's own signature/behavior is unchanged.
  */
 export function clampLensCenter(center: Point, radius: number, canvasSize: { w: number; h: number }): Point {
-  const clampAxis = (v: number, size: number): number => {
-    const hi = size - radius;
-    if (hi < radius) return size / 2;
-    return clamp(v, radius, hi);
-  };
-  return { x: clampAxis(center.x, canvasSize.w), y: clampAxis(center.y, canvasSize.h) };
+  return clampCenterHalfExtents(center, radius, radius, canvasSize);
+}
+
+/**
+ * Rect twin of `clampLensCenter` (D5): keeps a `2*halfW x 2*halfH` lens rect
+ * fully on-canvas. `placeRectLens`'s clamp-fallback and
+ * `magnifierRectSlideUpdate`'s per-frame clamp both call this — same one-owner
+ * discipline `clampLensCenter` already documents for the circle case.
+ */
+export function clampRectLensCenter(center: Point, halfW: number, halfH: number, canvasSize: { w: number; h: number }): Point {
+  return clampCenterHalfExtents(center, halfW, halfH, canvasSize);
 }
 
 /**
@@ -450,6 +728,53 @@ export function placeLens(from: Point, sourceRadius: number, lensRadius: number,
   }
 
   const clamped = candidates.map((c) => clampLensCenter(c, R, canvasSize));
+
+  let best = clamped[0];
+  let bestDist = Math.hypot(best.x - from.x, best.y - from.y);
+  for (let i = 1; i < clamped.length; i++) {
+    const dCand = Math.hypot(clamped[i].x - from.x, clamped[i].y - from.y);
+    if (dCand > bestDist) {
+      bestDist = dCand;
+      best = clamped[i];
+    }
+  }
+  return best;
+}
+
+/**
+ * Rect twin of `placeLens` (D4): auto-placed lens center for a source rect at
+ * `from` with half-extents `sourceHalfW`/`sourceHalfH`, given the target lens
+ * half-extents `lensHalfW`/`lensHalfH`. Same `PLACEMENT_DIRS`/candidate/
+ * clamp-fallback/farthest-pick structure as `placeLens`, generalized from one
+ * isotropic `dist` to a PER-AXIS `distX`/`distY` (`sourceHalf + gap +
+ * lensHalf` on each axis) — a circle's `dist` is direction-independent, but
+ * two axis-aligned rects need their own axis's half-extents to actually clear
+ * each other by `gap`. For a direction with both components non-zero
+ * (SE/SW/NE/NW), the resulting reach differs from the cardinal case per-axis
+ * whenever the two axes' half-extents differ (the common case for a rect
+ * lens), which is expected: an isotropic reach would either overshoot the
+ * short axis or undershoot the long one. Never fails, same as `placeLens`.
+ */
+export function placeRectLens(
+  from: Point,
+  sourceHalfW: number,
+  sourceHalfH: number,
+  lensHalfW: number,
+  lensHalfH: number,
+  canvasSize: { w: number; h: number },
+  gap: number,
+): Point {
+  const distX = sourceHalfW + gap + lensHalfW;
+  const distY = sourceHalfH + gap + lensHalfH;
+  const candidates = PLACEMENT_DIRS.map((dir) => ({ x: from.x + dir.x * distX, y: from.y + dir.y * distY }));
+
+  for (const c of candidates) {
+    if (c.x - lensHalfW >= 0 && c.x + lensHalfW <= canvasSize.w && c.y - lensHalfH >= 0 && c.y + lensHalfH <= canvasSize.h) {
+      return c;
+    }
+  }
+
+  const clamped = candidates.map((c) => clampRectLensCenter(c, lensHalfW, lensHalfH, canvasSize));
 
   let best = clamped[0];
   let bestDist = Math.hypot(best.x - from.x, best.y - from.y);
@@ -506,9 +831,95 @@ export function deriveLensSizeForSource(
   return { radius, zoom };
 }
 
-/** Clamp a candidate zoom to `[MIN_MAGNIFIER_ZOOM, min(MAX_MAGNIFIER_ZOOM, a.radius / limits.minSource)]` — the upper bound keeps the derived source circle from collapsing below the operability floor. `limits.minSource >= MIN_MAGNIFIER_SOURCE_RADIUS_PX > 0`, so there is no division hazard. */
-export function clampZoom(z: number, a: MagnifierAnnotation, limits: MagnifierSizeLimits): number {
+/** Clamp a candidate zoom to `[MIN_MAGNIFIER_ZOOM, min(MAX_MAGNIFIER_ZOOM, a.radius / limits.minSource)]` — the upper bound keeps the derived source circle from collapsing below the operability floor. `limits.minSource >= MIN_MAGNIFIER_SOURCE_RADIUS_PX > 0`, so there is no division hazard. Circle-only (narrowed alongside `magnifierSourceRadius`, D1/D2) — see `clampRectZoom` for the rect twin. */
+export function clampZoom(z: number, a: CircleMagnifierAnnotation, limits: MagnifierSizeLimits): number {
   return clamp(z, MIN_MAGNIFIER_ZOOM, Math.min(MAX_MAGNIFIER_ZOOM, a.radius / limits.minSource));
+}
+
+// Default width:height aspect for a freshly-created rect ("cube mode") lens
+// (D4) — wide, to fit a text line far better than a square would. 8:3 was
+// chosen over the circle-derived square so `deriveRectLensSize`'s creation
+// default reads as a text-line strip, not a small window.
+export const MAGNIFIER_RECT_ASPECT = 8 / 3;
+
+/**
+ * Rect twin of `clampZoom`: clamp a candidate zoom so BOTH derived source
+ * half-extents (`width/(2*zoom)`, `height/(2*zoom)`) stay `>=
+ * limits.minRectSource` (Addendum G, 2026-08-08 — was `limits.minSource`
+ * pre-Addendum-G; see `MagnifierSizeLimits`'s own doc comment for why the
+ * rect path uses a separate, smaller, LEGIBILITY floor rather than the
+ * circle's fingertip one) — `min(width, height)` is the binding axis, since
+ * it derives the smaller source half-extent. `width`/`height` are the
+ * LENS's full dimensions (the caller's current or candidate lens size, not
+ * the derived source), mirroring `clampZoom`'s `a.radius` term but taking
+ * the two axes directly rather than an annotation, since this is also
+ * called during creation (`deriveRectLensSize`) before any annotation
+ * exists.
+ *
+ * **Creation-only from Addendum I (2026-08-09) onward.** The `src-zoom`
+ * grip's runtime clamp moved to `clampRectZoomForSource`, below — the grip
+ * now holds the SOURCE fixed and solves for the LENS (`lens = source *
+ * zoom`), so its unknown-at-resize-time quantity is the source, not the
+ * lens, and this function's `width`/`height` (LENS dims) signature cannot
+ * serve it. This function keeps its one remaining caller,
+ * `deriveRectLensSize` step 8, where the lens dims ARE already known.
+ */
+export function clampRectZoom(z: number, width: number, height: number, limits: MagnifierSizeLimits): number {
+  return clamp(z, MIN_MAGNIFIER_ZOOM, Math.min(MAX_MAGNIFIER_ZOOM, Math.min(width, height) / (2 * limits.minRectSource)));
+}
+
+/**
+ * Rect twin of `clampZoom`, but for Addendum I's SOURCE-authoritative grip
+ * (2026-08-09, §I5): clamp a candidate zoom so the LENS derived from a FIXED
+ * source (`lensW = sourceW * z`, `lensH = sourceH * z`) stays within its own
+ * per-axis bounds — `[2*limits.minLens, 2*MAGNIFIER_MAX_LENS_FRACTION*
+ * canvasSize.{w,h}]` — while also respecting the global `[MIN_MAGNIFIER_ZOOM,
+ * MAX_MAGNIFIER_ZOOM]` range. This is the grip's runtime clamp; `clampRectZoom`
+ * (above) stays creation-only — see that function's own comment for why its
+ * lens-dims signature can't serve the grip.
+ *
+ * "Hi wins" clamp discipline, same as `magnifierSizeLimits`/`clampRectZoom`:
+ * the per-axis lens CAP (`hi`) is computed first from `MAX_MAGNIFIER_ZOOM`
+ * and the two canvas-relative maxima; the FLOOR (`lo`) — from
+ * `MIN_MAGNIFIER_ZOOM` and the `minLens`-relative per-axis minima — is then
+ * itself capped at `hi` via `Math.min(lo, hi)`, so a degenerate tiny canvas's
+ * cap always beats the lens-size floor rather than producing an inverted
+ * `lo > hi` range.
+ *
+ * `Number.EPSILON` floors both source dimensions before dividing: a
+ * zero-width or zero-height source (never actually produced by
+ * `applyMagnifierBoxResize`'s own floor, but this function has no way to
+ * enforce that on its own) cannot produce a NaN/Infinity zoom — it saturates
+ * the per-axis cap instead, the same guard `clampRectZoom` relies on
+ * `limits.minRectSource > 0` for.
+ *
+ * Weaker invariant than `clampRectZoom` on a degenerate CANVAS specifically
+ * (`clampRectZoom` takes no `canvasSize` at all, so it is simply not exposed
+ * to this): on a zero-size `canvasSize` (`w === 0` or `h === 0`), the
+ * canvas-relative terms in `hi` collapse toward 0, and "hi wins" then
+ * returns a value BELOW `MIN_MAGNIFIER_ZOOM` — not merely below
+ * `MAX_MAGNIFIER_ZOOM` as the "hi wins" discipline elsewhere promises. Not
+ * guarded further: `canvas.ts`'s canvas dimensions are never zero in the
+ * running app (an image must load before a magnifier can be created or
+ * resized at all), so this stays a theoretical edge case of the pure
+ * function, not a reachable UI bug.
+ */
+export function clampRectZoomForSource(
+  z: number,
+  sourceW: number,
+  sourceH: number,
+  canvasSize: { w: number; h: number },
+  limits: MagnifierSizeLimits,
+): number {
+  const sw = Math.max(sourceW, Number.EPSILON);
+  const sh = Math.max(sourceH, Number.EPSILON);
+  const hi = Math.min(
+    MAX_MAGNIFIER_ZOOM,
+    (2 * MAGNIFIER_MAX_LENS_FRACTION * canvasSize.w) / sw,
+    (2 * MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h) / sh,
+  );
+  const lo = Math.max(MIN_MAGNIFIER_ZOOM, (2 * limits.minLens) / Math.min(sw, sh));
+  return clamp(z, Math.min(lo, hi), hi); // "hi wins", same discipline as magnifierSizeLimits
 }
 
 /**
@@ -540,6 +951,163 @@ export function defaultSourceRadius(canvasSize: { w: number; h: number }, limits
   const longSide = Math.max(canvasSize.w, canvasSize.h);
   const shortSide = Math.min(canvasSize.w, canvasSize.h);
   return Math.max(Math.min(MAGNIFIER_SOURCE_RADIUS_FRACTION * longSide, MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide), limits.minSource);
+}
+
+/**
+ * Rect twin of `defaultSourceRadius` + `deriveLensSizeForSource`, composed
+ * (D4, rewritten by Addendum D §D11 — 2026-08-08, reviewer nit N3): every
+ * rect ("cube mode") creation gesture uses this as the SOLE determinant of
+ * creation-time size/zoom for a given S/M/L preset, mirroring how the circle
+ * path composes those same two functions at the single call site
+ * (`canvas.ts`'s `magnifierGeometry`).
+ *
+ * **Why N3 changed this at all.** The pre-Addendum-D version floored
+ * `sourceHalfH` at `limits.minSource` whenever `sourceHalfW /
+ * MAGNIFIER_RECT_ASPECT` fell under it, which silently SQUARED UP the source
+ * (and therefore the lens) on any canvas where the operability floor bites on
+ * one axis — defeating the whole point of `MAGNIFIER_RECT_ASPECT` (a wide
+ * default that reads as a text-line strip, not a small window). §D11's fix:
+ * when the floor lifts `sourceHalfH`, WIDEN `sourceHalfW` to restore the 8:3
+ * ratio instead of leaving the aspect lost — capped by the same panorama
+ * guard `defaultSourceRadius` itself uses, so widening can never make the
+ * source swallow the image. §D11 additionally makes the preset's ZOOM
+ * inherit exactly what the circle path would have chosen for the same
+ * S/M/L — i.e. cube mode never magnifies less than the circle does at the
+ * same preset, even after the source is widened.
+ *
+ * **Addendum G (2026-08-08, request (1)):** step 2's floor switched from
+ * `limits.minSource` (the circle's fingertip floor, 20 CSS px) to
+ * `limits.minRectSource` (a legibility-only floor, 4 CSS px — see
+ * `MIN_MAGNIFIER_RECT_SOURCE_CSS_PX`'s own doc comment). The floor now
+ * rarely bites at all (it takes a much smaller `baseHalfW` to trip), so
+ * step 3's widening — and the squared-up-source failure mode it exists to
+ * avoid — is correspondingly rarer too; the 8:3 default survives intact far
+ * more often. Every other step is otherwise unchanged by Addendum G.
+ *
+ * 1. `baseHalfW = defaultSourceRadius(canvasSize, limits)` — UNCHANGED: the
+ *    circle's own default source radius, reused verbatim as the rect
+ *    source's HALF WIDTH before any widening.
+ * 2. `sourceHalfH = max(baseHalfW / MAGNIFIER_RECT_ASPECT,
+ *    limits.minRectSource)` — the aspect-derived half height, floored at
+ *    the rect's own LEGIBILITY minimum (Addendum G; was `limits.minSource`
+ *    pre-Addendum-G) so a very wide/short source still draws a visible frame.
+ * 3. `sourceHalfW = max(baseHalfW, min(MAGNIFIER_RECT_ASPECT * sourceHalfH,
+ *    MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide))` — NEW (N3): when step 2's
+ *    floor LIFTED `sourceHalfH` above `baseHalfW / ASPECT`, this widens the
+ *    half WIDTH back out so `sourceHalfW / sourceHalfH === ASPECT` again,
+ *    instead of leaving the source squared up. Capped at
+ *    `MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide` — the same panorama guard
+ *    `defaultSourceRadius` applies to its own long-side term — so widening
+ *    can never make the source rect approach the image's own short side.
+ *    Identity (`sourceHalfW === baseHalfW`) whenever step 2's floor did not
+ *    bite; on a canvas so small that `limits.minRectSource` itself sits on
+ *    the absolute `MIN_MAGNIFIER_SOURCE_RADIUS_PX` backstop, the `min(...,
+ *    SHORT_SIDE_CAP * shortSide)` term caps widening away entirely, leaving
+ *    `sourceHalfW === baseHalfW` there too (a degenerate canvas keeps the
+ *    pre-widening geometry, not a widened-but-still-tiny one).
+ * 4. `{radius: baseLensHalfW, zoom: zoom0} = deriveLensSizeForSource(baseHalfW,
+ *    size, canvasSize, limits)` — the preset's zoom comes from the
+ *    UNWIDENED source (`baseHalfW`, not `sourceHalfW`), so `zoom0` is EXACTLY
+ *    what the circle path would pick for this same S/M/L preset.
+ * 5. `lensHalfW = baseLensHalfW * (sourceHalfW / baseHalfW)`, `lensHalfH =
+ *    sourceHalfH * zoom0` — the width axis carries the same widening factor
+ *    the source picked up in step 3, so lens aspect equals source aspect
+ *    exactly; the height axis is the direct `zoom0` scaling of the
+ *    (unfloored-again) source half-height from step 2.
+ * 6. Both axes are shrunk by ONE shared factor `s = min(1, limits.maxLens /
+ *    lensHalfW, (MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h) / lensHalfH)` if
+ *    either per-axis cap would otherwise bind — a per-axis independent cap
+ *    would skew the aspect the whole feature exists to preserve, so both caps
+ *    are checked but only the tighter one (if any) scales, uniformly.
+ * 7. Floors apply LAST, per axis, each capped at that axis's own maximum so
+ *    the "hi wins" clamp discipline `magnifierSizeLimits` documents for its
+ *    own bounds still holds even in the rare regime where a floor and a cap
+ *    are both in play: `lensHalfW = max(lensHalfW, min(limits.minLens,
+ *    limits.maxLens))`, `lensHalfH = max(lensHalfH, min(limits.minLens,
+ *    MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h))`. A floor trip here is rare
+ *    (step 6 already shrinks toward the caps, not away from the floors) and,
+ *    when it happens on only one axis, the aspect IS lost — an accepted,
+ *    documented outcome, not prevented, since a lens axis under `minPx` would
+ *    be unusable regardless of aspect.
+ * 8. `zoom` is re-clamped once via `clampRectZoom` against the FINAL
+ *    `2*lensHalfW`/`2*lensHalfH` pair — the same "recompute once from the
+ *    clamped value" discipline `deriveLensSizeForSource` itself documents.
+ * 9. The returned `sourceHalfW`/`sourceHalfH` are `lensHalfW / zoom` and
+ *    `lensHalfH / zoom` — the source half-extents the annotation will
+ *    ACTUALLY have (`source === lens / zoom` is the one derived-geometry
+ *    invariant this whole module exists to own, `magnifierSourceRect`'s own
+ *    doc comment), computed from the FINAL, post-clamp `lensHalfW`/
+ *    `lensHalfH`/`zoom` rather than the step 1-3 intermediates, which steps
+ *    6-8 can have moved. `placeRectLens` (the only caller of these two
+ *    fields, via `canvas.ts`'s `magnifierRectGeometry`) needs the actual
+ *    post-clamp gap the annotation will place with, not a pre-clamp guess.
+ *
+ * Returns full lens `width`/`height` (`2 * lensHalfW`/`2 * lensHalfH`),
+ * matching `RectMagnifierAnnotation`'s own fields — the caller never has to
+ * double a half-extent itself.
+ */
+export function deriveRectLensSize(
+  size: SizeName,
+  canvasSize: { w: number; h: number },
+  limits: MagnifierSizeLimits,
+): { sourceHalfW: number; sourceHalfH: number; width: number; height: number; zoom: number } {
+  const shortSide = Math.min(canvasSize.w, canvasSize.h);
+
+  // 1. The circle's own default source radius, as the rect's half WIDTH
+  //    before widening. Audit note (Addendum G, 2026-08-08): this is the one
+  //    remaining place `limits.minSource` (the circle's fingertip floor, not
+  //    the rect's own `minRectSource`) still influences a rect dimension —
+  //    `defaultSourceRadius` floors its result at `limits.minSource`
+  //    unconditionally, circle call sites and this one alike. Harmless in
+  //    practice (the `MAGNIFIER_SOURCE_RADIUS_FRACTION * longSide` term wins
+  //    over the floor in every checked canvas/scale combination — see
+  //    `defaultSourceRadius`'s own tests), and the CREATED size stays freely
+  //    shrinkable afterward via the resize handles (`minRectSource`-floored,
+  //    per `applyMagnifierBoxResize`) regardless of where creation started —
+  //    but Addendum G's own text does not mention this indirect influence,
+  //    so it is recorded here rather than left implicit.
+  const baseHalfW = defaultSourceRadius(canvasSize, limits);
+
+  // 2. The aspect-derived half height, floored at the rect's own LEGIBILITY
+  //    minimum (Addendum G) — not the circle's fingertip minSource.
+  const sourceHalfH = Math.max(baseHalfW / MAGNIFIER_RECT_ASPECT, limits.minRectSource);
+
+  // 3. N3: when step 2's floor lifted the half height, restore the aspect by
+  //    WIDENING instead of squaring up, capped by the panorama guard.
+  const sourceHalfW = Math.max(baseHalfW, Math.min(MAGNIFIER_RECT_ASPECT * sourceHalfH, MAGNIFIER_SOURCE_SHORT_SIDE_CAP * shortSide));
+
+  // 4. The preset's zoom comes from the UNWIDENED source, so cube mode never
+  //    magnifies less than the circle does for the same S/M/L.
+  const { radius: baseLensHalfW, zoom: zoom0 } = deriveLensSizeForSource(baseHalfW, size, canvasSize, limits);
+
+  // 5. Lens half-extents at that zoom; the width axis carries the widening
+  //    factor, so lens aspect === source aspect exactly.
+  let lensHalfW = baseLensHalfW * (sourceHalfW / baseHalfW);
+  let lensHalfH = sourceHalfH * zoom0;
+
+  // 6. Caps shrink BOTH axes by one factor, so a cap can never skew the aspect.
+  const s = Math.min(1, limits.maxLens / lensHalfW, (MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h) / lensHalfH);
+  if (s < 1) {
+    lensHalfW *= s;
+    lensHalfH *= s;
+  }
+
+  // 7. Floors last, per axis, never above that axis's own cap ("hi wins").
+  lensHalfW = Math.max(lensHalfW, Math.min(limits.minLens, limits.maxLens));
+  lensHalfH = Math.max(lensHalfH, Math.min(limits.minLens, MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h));
+
+  // 8. One re-clamp of zoom against the FINAL width/height pair.
+  const zoom = clampRectZoom(zoom0, 2 * lensHalfW, 2 * lensHalfH, limits);
+
+  // 9. Source half-extents the annotation will ACTUALLY have, derived from
+  //    the final post-clamp lens size and zoom, not the pre-clamp intermediates.
+  return {
+    sourceHalfW: lensHalfW / zoom,
+    sourceHalfH: lensHalfH / zoom,
+    width: 2 * lensHalfW,
+    height: 2 * lensHalfH,
+    zoom,
+  };
 }
 
 /**
@@ -599,5 +1167,30 @@ export function magnifierSlideUpdate(
 ): { from: Point; at: Point } {
   const from = clampPointToCanvas(p, canvasSize);
   const at = clampLensCenter({ x: from.x + frozen.offset.x, y: from.y + frozen.offset.y }, frozen.radius, canvasSize);
+  return { from, at };
+}
+
+/**
+ * Rect twin of `magnifierSlideUpdate` (D4): same per-frame slide-to-aim
+ * update, `frozen.half` (the lens's frozen HALF-extents, `{x: halfW, y:
+ * halfH}` — the rect analog of the circle's scalar `frozen.radius`, captured
+ * once at pointerdown, same "sizing cannot change mid-gesture" discipline) in
+ * place of `frozen.radius`, and `clampRectLensCenter` in place of
+ * `clampLensCenter`. See `magnifierSlideUpdate`'s doc comment for why `from`
+ * is clamped here but not during a committed annotation's source-body drag —
+ * identical rationale, not repeated.
+ */
+export function magnifierRectSlideUpdate(
+  p: Point,
+  frozen: { offset: Point; half: Point },
+  canvasSize: { w: number; h: number },
+): { from: Point; at: Point } {
+  const from = clampPointToCanvas(p, canvasSize);
+  const at = clampRectLensCenter(
+    { x: from.x + frozen.offset.x, y: from.y + frozen.offset.y },
+    frozen.half.x,
+    frozen.half.y,
+    canvasSize,
+  );
   return { from, at };
 }

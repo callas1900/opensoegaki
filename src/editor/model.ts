@@ -73,19 +73,37 @@ export interface ImageAnnotation extends AnnotationBase {
   // color/strokeWidth are inherited but unused placeholders, filled from DEFAULTS at creation.
 }
 
-export interface MagnifierAnnotation extends AnnotationBase {
+interface MagnifierBase extends AnnotationBase {
   kind: "magnifier";
-  /** CENTER of the lens circle, in bitmap coords — same convention as
+  /** CENTER of the lens, in bitmap coords — same convention as
    *  BadgeAnnotation's `at` (a center, not a corner). */
   at: Point;
-  /** Lens radius, bitmap px. */
-  radius: number;
-  /** Magnification factor (> 1). */
+  /** Magnification factor (> 1), uniform on both axes. */
   zoom: number;
   /** CENTER of the source region, in bitmap coords. The source region is
-   *  DERIVED: a circle of radius `radius / zoom` centered here. */
+   *  DERIVED from the lens size and `zoom` (see subtypes below). */
   from: Point;
 }
+
+export interface CircleMagnifierAnnotation extends MagnifierBase {
+  /** Absent means circle — pre-existing in-session/serialized annotations
+   *  predate the rect variant and never carry this field. */
+  shape?: "circle";
+  /** Lens radius, bitmap px. Source region: a circle of radius
+   *  `radius / zoom` centered on `from`. */
+  radius: number;
+}
+
+export interface RectMagnifierAnnotation extends MagnifierBase {
+  shape: "rect";
+  /** Full lens width, bitmap px. */
+  width: number;
+  /** Full lens height, bitmap px. */
+  height: number;
+  /** Source region: a `(width/zoom) x (height/zoom)` rect centered on `from`. */
+}
+
+export type MagnifierAnnotation = CircleMagnifierAnnotation | RectMagnifierAnnotation;
 
 export type Annotation =
   | ArrowAnnotation

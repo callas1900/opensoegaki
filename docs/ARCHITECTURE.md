@@ -139,20 +139,28 @@ discipline as `crop.ts`/`hittest.ts`: DOM-free, ctx-free, and deliberately
 **never imported by `exporter.ts`**. It owns handle layout, hit-testing, and
 per-kind resize transforms:
 
-- `resizeHandlesFor(a, bounds)` returns the `HandleSpec[]` for an annotation,
-  positioned from the `Bounds` the caller already has via `bounds.ts`'s
-  `boundsOf`. Box kinds (rect, image) get all 8 corner+edge handles; text and
-  badge get the 4 corners only; arrow's 2 handles are its `from`/`to` points
-  read directly off the annotation (not the normalized bounds), so each
-  endpoint keeps its own identity. **Highlight returns `[]`** — bbox-scaling a
-  freehand polyline would distort the stroke shape unpredictably, so it stays
-  move/delete-only, same rationale as its resize exemption.
+- `resizeHandlesFor(a, bounds, srcHandleOutset)` returns the `HandleSpec[]`
+  for an annotation, positioned from the `Bounds` the caller already has via
+  `bounds.ts`'s `boundsOf`. Box kinds (rect, image) get all 8 corner+edge
+  handles; text and badge get the 4 corners only; arrow's 2 handles are its
+  `from`/`to` points read directly off the annotation (not the normalized
+  bounds), so each endpoint keeps its own identity. **Highlight returns
+  `[]`** — bbox-scaling a freehand polyline would distort the stroke shape
+  unpredictably, so it stays move/delete-only, same rationale as its resize
+  exemption. `srcHandleOutset` (bitmap px, Addendum I, 2026-08-09) is read
+  only by a rect magnifier's box-handle arm — see "Magnifier (loupe)" below.
 - `handleAt(handles, p, hitRadius)` is the nearest-within-radius pick, the
   same pattern as `crop.ts`'s corner `handleAt`.
-- `applyResize(original, bounds, handle, pointer, shiftKey)` returns a new
-  annotation for the dragged handle + pointer position — never mutates
-  `original`. Per-kind transforms (no clamping to canvas bounds, consistent
-  with move — only per-kind min/max and no-flip-past-anchor):
+- `applyResize(original, bounds, handle, pointer, shiftKey, limits, canvasSize, srcHandleOutset)`
+  returns a new annotation for the dragged handle + pointer position — never
+  mutates `original`. `limits: MagnifierSizeLimits` (Addendum B, 2026-08-02),
+  `canvasSize` (added alongside the rect magnifier variant, D5, 2026-08-08),
+  and `srcHandleOutset` (Addendum I, 2026-08-09) are read only by the
+  magnifier branch (`limits` by both shapes, `canvasSize` and
+  `srcHandleOutset` by the rect shape's box-handle gesture); every other
+  kind ignores them — see "Magnifier (loupe)" below. Per-kind transforms (no
+  clamping to canvas bounds, consistent with move — only per-kind min/max and
+  no-flip-past-anchor):
   - **rect**: corner drag pins the diagonally opposite corner and resizes
     freely; edge drag moves only that edge; **Shift on a corner locks the
     pre-drag aspect ratio**; minimum 8px per axis (`MIN_RECT_PX`).
@@ -410,18 +418,23 @@ is one PNG blob per id, keyed the same way `Doc.images` is keyed today.
 ## Magnifier (loupe)
 
 A `"magnifier"` annotation (`MagnifierAnnotation` in `model.ts`, TASK-46) puts
-a wide-context screenshot and a zoomed-in detail in one image: a circular
-**source** region on the background and a magnified **lens** disc drawn
-elsewhere on the same canvas, joined by a connector — so the recipient sees
-both the context and the detail without a second cropped image. Design
-history: `docs/design/2026-08-01-magnifier-loupe.md` (original design),
-Addendum A `docs/design/2026-08-01a-magnifier-creation-revision.md`
+a wide-context screenshot and a zoomed-in detail in one image: a **source**
+region on the background and a magnified **lens** drawn elsewhere on the same
+canvas, joined by a connector — so the recipient sees both the context and
+the detail without a second cropped image. Two lens shapes exist, a circle
+(the original) and a resizable rectangle ("cube mode", added 2026-08-08 —
+see "Rect variant" below); this section describes the circle unless stated
+otherwise. Design history: `docs/design/2026-08-01-magnifier-loupe.md`
+(original design), Addendum A `docs/design/2026-08-01a-magnifier-creation-revision.md`
 (touch-first slide-to-aim creation gesture), Addendum B
 `docs/design/2026-08-02-magnifier-connector-and-size-limits.md`
-(single-segment connector; operability-based size limits), and Addendum C
+(single-segment connector; operability-based size limits), Addendum C
 `docs/design/2026-08-02a-magnifier-tapered-connector.md` (the connector
-widens toward the lens) — each addendum's header cross-links the note(s) it
-partially supersedes or overrides.
+widens toward the lens), the "magnifier UX brush-up" note
+`docs/design/2026-08-06-magnifier-ux-brushup.md` (source-body drag, zoom grip
+redesign, frame weight), and `docs/design/2026-08-08-magnifier-cube-mode.md`
+(the rectangular lens variant) — each addendum's header cross-links the
+note(s) it partially supersedes or overrides.
 
 **Data model and the derived-source rule.** The lens (`at`: center, `radius`)
 and `zoom` are stored and authoritative, along with `from` (the source
@@ -441,6 +454,21 @@ construction, the operability size limits, auto-placement, and the S/M/L size
 derivation — lives in one pure leaf module, `src/editor/magnifier.ts` (imports
 only `model.ts`/`bounds.ts` types), so no other file re-implements "where does
 the source circle sit."
+
+**Model union (2026-08-08).** `MagnifierAnnotation` is a discriminated union,
+`CircleMagnifierAnnotation | RectMagnifierAnnotation`, narrowed on an optional
+`shape` field (`shape` absent, or `"circle"`, means circle — every
+pre-existing annotation predates the rect variant and never carries the
+field, so no migration is needed; `shape: "rect"` carries `width`/`height`
+instead of `radius`). Translate/undo/commit/degeneracy logic is 100% shared
+between the two shapes, so this is a union inside the existing `"magnifier"`
+kind, not a new `AnnotationKind` — a new kind would duplicate an arm in every
+exhaustive `switch (a.kind)` this codebase already has. See "Rect variant"
+below for the full geometry/resize/UI delta; `magnifierSourceRadius`/
+`clampZoom` are narrowed to `CircleMagnifierAnnotation` (a rect has no single
+radius, so its source is derived per-axis instead), while
+`magnifierSourceRect`/`magnifierLensRect` and `boundsOf`'s magnifier case
+became shape-aware.
 
 **Circle marker, not the sampled square.** `ctx.drawImage` samples an
 axis-aligned rectangle internally (the source circle's bounding square), but
@@ -545,8 +573,13 @@ unselected).**
 Every degree of freedom has exactly one control, and every control has
 exactly one meaning — grabbing and dragging a magnified disc must never
 silently change what it magnifies. `hittest.ts`'s `magnifierHitPart(a, p,
-tolerance)` is the one owner of "which disc did the pointer land on" (lens
-disc first, source disc second — paint order; `null` if neither): `model.ts`
+tolerance, sourceMinHitHalf)` is the one owner of "which disc did the
+pointer land on" (lens disc/rect first, source disc/rect second — paint
+order; `null` if neither). `sourceMinHitHalf` (Addendum G, 2026-08-08) is a
+required per-axis floor on the RECT source's hit half-extent only — the
+circle branch ignores it, since its own `minSource` floor is already
+fingertip-sized; see "Operability / size limits" below for why the rect
+needs one at all. `model.ts`
 exports the shared `MagnifierPart = "lens" | "source"` union so the probe's
 return type *is* `translateAnnotation`'s `part` parameter, no separate
 vocabulary or mapping layer. `canvas.ts` decides the part ONCE, at
@@ -718,14 +751,30 @@ radius eats into the source disc — now the drag surface — from the rim, so
 at the old floor). Cost: TASK-46 AC#12's aspect-independence threshold moves
 from `>= 267` to `>= 333` CSS px long side (`20 / 0.06`).
 `magnifierSizeLimits(canvasSize, scale)` (magnifier.ts) is the one
-owner of the resulting three bounds (`minSource`, `minLens`, `maxLens`);
-`defaultSourceRadius`, `deriveLensSizeForSource`, `clampZoom` (magnifier.ts)
-and every resize enforcement site (`resize.ts`'s `applyResize`, now taking a
-required `limits: MagnifierSizeLimits` 6th parameter — read only by the
-magnifier branch) consult it instead of the old fixed constants.
-`MIN_MAGNIFIER_SOURCE_RADIUS_PX` (2 bitmap px) survives as an absolute
-backstop beneath the CSS-scaled floor, guaranteeing `minSource > 0` even for
-a degenerate/zero-sized canvas (`clampZoom` divides by it).
+owner of the resulting bounds (`minSource`, `minRectSource`, `minLens`,
+`maxLens`); `defaultSourceRadius`, `deriveLensSizeForSource`, `clampZoom`
+(magnifier.ts) and every resize enforcement site (`resize.ts`'s
+`applyResize`, now taking a required `limits: MagnifierSizeLimits` 6th
+parameter — read only by the magnifier branch) consult it instead of the old
+fixed constants. `MIN_MAGNIFIER_SOURCE_RADIUS_PX` (2 bitmap px) survives as
+an absolute backstop beneath the CSS-scaled floor, guaranteeing
+`minSource > 0` even for a degenerate/zero-sized canvas (`clampZoom` divides
+by it) — `minRectSource` shares the same backstop.
+
+**`minSource` is circle-only from Addendum G onward (2026-08-08, live iPhone
+testing).** The rect ("cube mode") variant switched its three floor readers
+(`clampRectZoom`, `applyMagnifierBoxResize`'s `minPx`,
+`deriveRectLensSize`'s `sourceHalfH` floor) to a separate, much smaller
+field, `minRectSource` (`MIN_MAGNIFIER_RECT_SOURCE_CSS_PX = 4` CSS px vs
+`minSource`'s fingertip-sized 20) — a LEGIBILITY floor on the drawn source,
+not an operability one. Operability moved entirely to the hit TARGET
+instead: `hittest.ts`'s rect branch independently floors the source's hit
+half-extents at `canvas.ts`'s `MAGNIFIER_SOURCE_MIN_HIT_HALF_PX` (11 CSS px,
+touch-multiplied), regardless of how small the drawn source has shrunk. See
+`docs/design/2026-08-08-magnifier-cube-mode.md`'s "Addendum G" for the full
+rationale (a fingertip-floored drawn source on a phone screenshot at typical
+PWA `cropScale` pinned the smallest source to several lines of text and
+capped zoom under 2x, defeating a "magnify one line of text" tool).
 
 One UI-facing consequence worth stating plainly: **at a high zoom the lens
 cannot be shrunk past `zoom * minSource` — lower the zoom before shrinking
@@ -744,6 +793,184 @@ desktop window and "below range" once the same document is opened small on a
 phone — intentional (the floors track the current finger-to-pixel ratio),
 never destructive, and documented in `magnifier.ts`'s module doc comment so
 it doesn't read as a bug later.
+
+**Rect variant ("cube mode", `docs/design/2026-08-08-magnifier-cube-mode.md`).**
+A second lens shape — a resizable rectangle, better suited to a text line than
+a disc — lives inside the same `"magnifier"` kind as the union described above.
+Second tap on the toolbar's magnifier button (while it is already the active
+tool) toggles between the two shapes and swaps the button's icon — see
+"Toolbar" below.
+
+- *Geometry.* Same center+size convention as the circle (`at`/`from` are
+  centers, not corners, unlike `RectAnnotation`'s `a`/`b`): the source region
+  is derived as `(width/zoom) x (height/zoom)`, centered on `from` — the rect
+  analog of the circle's `radius/zoom`.
+- *Connector (Addendum H, 2026-08-08, live iPhone feedback — replaces
+  Addendum G's convex-hull-bridge selection below wholesale: those bridges
+  connected the pair's SILHOUETTE, e.g. both segments running top-corner to
+  top-corner for a wide lens sitting below a narrow source, not the FACING
+  edges a zoom callout is expected to bridge).*
+  `magnifierRectConnectorLines(sourceRect, lensRect, w1)` returns two
+  straight corner-to-corner segments joining the two rects' FACING edges —
+  the facing pair is chosen on whichever axis the suppression guard's own
+  per-axis gap is larger (which is therefore always strictly separated),
+  matched same-side (top↔top / left↔left), so the segments live in the slab
+  between the two facing edge lines and meet each rect only at their
+  endpoint corners; stroked lines only, `markerStroke`, two-pass, no fill.
+  Suppression guard: the same PER-AXIS AABB rim gap test as Addendum G
+  (`gx`/`gy`, source half-extents inflated by `w1/2`), `null` below
+  `MAGNIFIER_CONNECTOR_MIN_GAP_PX` — BYTE-IDENTICAL, carried forward
+  unchanged by Addendum H, since it also guarantees the dominant axis is
+  always strictly separated (the precondition the facing-edge slab argument
+  needs). The convex-hull bridge construction (`connectorBridge`, its 4x4
+  scan and shortest-pair tie-break) is deleted, not kept as a fallback — see
+  `docs/design/2026-08-08-magnifier-cube-mode.md`'s Addendum H for the full
+  ruling and proofs. The `e±`/`L±` tangent-from-flank-endpoint construction
+  (Addendum E §E1-§E3) and the near-corner insertion rule (§E2) remain
+  deleted from Addendum G, not revived.
+- *Creation.* `deriveRectLensSize(size, canvasSize, limits)` (Addendum D
+  §D11, 2026-08-08, reviewer nit N3; floor switched by Addendum G, see
+  above): the circle's own `defaultSourceRadius` is the source's UNWIDENED
+  half width (`baseHalfW`, still floored at the CIRCLE's `limits.minSource`
+  — that step is unaffected by Addendum G); the aspect-derived half height
+  floors at `limits.minRectSource` (the rect's own legibility floor); when
+  that floor LIFTS the half height, the half WIDTH is WIDENED back out to
+  restore
+  `MAGNIFIER_RECT_ASPECT` (capped at `MAGNIFIER_SOURCE_SHORT_SIDE_CAP *
+  shortSide`, the same panorama guard `defaultSourceRadius` itself uses) —
+  instead of the pre-D11 behavior of silently squaring the lens up when the
+  floor bit. The preset's ZOOM comes from the UNWIDENED source
+  (`deriveLensSizeForSource(baseHalfW, ...)`), so cube mode never magnifies
+  less than the circle path at the same S/M/L preset; the lens half-extents
+  at that zoom then carry the same widening factor, so lens aspect exactly
+  equals source aspect. Caps (`limits.maxLens` on width,
+  `MAGNIFIER_MAX_LENS_FRACTION * canvasSize.h` on height) shrink BOTH axes
+  by ONE shared factor if either binds, so a cap cannot skew the aspect;
+  floors apply LAST, per axis (rare, and when one bites the aspect is lost —
+  documented, not prevented). `zoom` is re-clamped once via `clampRectZoom`
+  against the final width/height pair.
+  `placeRectLens`/`clampRectLensCenter`/`magnifierRectSlideUpdate` mirror
+  `placeLens`/`clampLensCenter`/`magnifierSlideUpdate` with per-axis
+  half-extents in place of a scalar radius; the slide-to-aim gesture itself
+  (`canvas.ts`'s `onDown`/`onMove`) is otherwise unchanged, just dispatched on
+  `editor.magnifierShape` at the top via a new `magnifierPlace` union and a
+  `magnifierRectGeometry(from, strokeWidth)` helper mirroring
+  `magnifierGeometry`. The auto-placement GAP passed to `placeRectLens` is
+  `MAGNIFIER_GAP_PX + magnifierMarkerStroke(strokeWidth) / 2` (Addendum F,
+  2026-08-08), not the bare constant — inflated by the same term Addendum E
+  §E4's suppression guard subtracts from the source half-extents, so a
+  freshly created rect magnifier's connector always clears its own guard
+  even at the large `strokeWidth` values the web target's adaptive
+  `docScale` can produce; the circle's `magnifierGeometry` is untouched,
+  since its guard (`trimmedConnectorAxis`) has no such band-width term.
+- *Resize (Addendum I, 2026-08-09 — supersedes D5's lens-authoritative
+  gesture below).* The 8 box handles resize the SOURCE rect instead of the
+  lens, `zoom` stays FIXED for the whole drag, and the lens follows exactly
+  as `source * zoom`. `resizeHandlesFor` draws the 8 handles
+  (`boxHandles`, the same helper rect/image use) on `magnifierSourceRect(a)`
+  inflated by a screen-constant `srcHandleOutset` (an OUTSET RING, not the
+  bare source rect — at the §G1 floor the source is 8 CSS px across, and
+  eight bare `HANDLE_DRAW_PX` squares would cover it completely). The
+  `src-zoom` grip relocates to the LENS's own SE corner, still listed FIRST
+  in `resizeHandlesFor` so it wins exact ties in `nearestHandle`. A
+  box-handle drag pins the diagonally opposite SOURCE corner (`from` moves,
+  like rect/image); `at` (the lens center) is FIXED — the lens grows/shrinks
+  about its own centre. New global invariant: **`at` changes only under a
+  lens-body drag; `from` changes only under a source-body drag or a source
+  box-handle drag; `zoom` changes only under the grip.** For a genuine drag,
+  the pointer is deflated by `srcHandleOutset` along the handle's own
+  direction before `resizeBox` runs, inverting the ring's inflation.
+  Grabbing a handle without moving is an exact no-op, but NOT because that
+  deflate-then-`resizeBox` round-trip is trusted to reconstruct the pre-drag
+  box bit-exactly (reviewer round 3, 2026-08-09: it isn't, on
+  production-shaped geometry — `resizeBox`'s edge-difference reconstruction
+  alone drifts in the large majority of sampled non-dyadic fixtures) — instead
+  `applyMagnifierBoxResize` recomputes the dragged handle's own ring position
+  with the exact same call `resizeHandlesFor` used to draw it and
+  short-circuits to the original annotation on an exact pointer match, the
+  same mechanism the `src-zoom` grip branch uses for its own no-op guarantee.
+
+  Clamping (Addendum D §D9/§D10, 2026-08-08, reviewer nits N1/N2 — a
+  TASK-48 AC#6 regression fix — rulings unchanged, re-expressed in SOURCE
+  units by Addendum I): `minSrcPx = 2 * max(limits.minLens / zoom,
+  limits.minRectSource)` and `maxSrc{W,H} = 2 * MAGNIFIER_MAX_LENS_FRACTION
+  * canvasSize.{w,h} / zoom` apply to BOTH source axes on every box-handle
+  drag, not just the axis the dragged handle actually touched — the axis a
+  handle never touched is RE-CENTERED on its own pre-drag SOURCE center
+  (`a.from`'s coordinate on that axis), not left at its old, possibly
+  out-of-range, extent. The floor is two-sided, `lo = min(minSrcPx, max)` —
+  the same "hi wins" clamp discipline `magnifierSizeLimits` documents for
+  its own bounds. A Shift-locked corner drag scales BOTH source axes by ONE
+  shared factor when a cap trips, so the aspect ratio `resizeBox` already
+  enforced survives the clamp intact — except in the documented floor-vs-cap
+  conflict regime, where the per-axis floor wins over the aspect.
+  `minRectSource` is now enforced ONLY by this gesture — the grip holds the
+  source fixed and cannot enforce it.
+
+  The grip's mapping is INVERTED from D5: `zoom =
+  clampRectZoomForSource(dist(pointer, at) / srcHalfDiag, src.w, src.h,
+  canvasSize, limits)`, `srcHalfDiag = hypot(src.w, src.h)/2` (the SOURCE's
+  own half-diagonal, not the lens's); `from`/the source never change on this
+  gesture — only `zoom`, `width`, `height`. `clampRectZoomForSource`
+  (magnifier.ts, NEW) is the grip's runtime clamp — the source is the fixed,
+  known quantity here, so the pre-existing `clampRectZoom` (whose signature
+  takes LENS dims) stays creation-only (`deriveRectLensSize` step 8).
+
+  `applyResize`/`resizeHandlesFor` (`resize.ts`) each gained a required
+  `srcHandleOutset` parameter (bitmap px) for this gesture; every other
+  kind, including the circle magnifier, ignores it, the same "one
+  parameter, one kind reads it" precedent Addendum B already set for
+  `limits`. New pure predicate `magnifierSourceBodyWins(a, p, nearest)`
+  (§I6): with 8 handles now ringing a source whose short half-extent can be
+  a few CSS px, the handles' touch hit discs can swallow the source's own
+  fingertip-floored hit region — `canvas.ts`'s `rotateOrResizeTarget`
+  consults this right after computing the nearest handle and falls through
+  to the ordinary source-body drag when a press is at least as near `from`
+  as to that handle. Circle-only-false: the circle's grip sits well clear of
+  its own source center, so this never changes circle behavior.
+- *Toggle UI.* `Editor.magnifierShape: "circle" | "rect"` (session-scoped,
+  default `"circle"`) with `getMagnifierShape()`/`toggleMagnifierShape()`; a
+  second tap on the magnifier toolbar button while it is already the active
+  tool toggles the shape and swaps the button's icon — the same
+  second-tap-on-an-already-active-tool convention the badge tool established
+  for its fixed-number bar (see "Toolbar" below). `index.html`/`pwa/index.html`
+  tag the existing circle glyph `data-magnifier-icon="circle"` and add a
+  hidden sibling `data-magnifier-icon="rect"`; the swap toggles the `hidden`
+  attribute via `toggleAttribute` (not the `HTMLElement.hidden` IDL property,
+  which `SVGElement` doesn't expose, even though the attribute works
+  identically at the DOM level).
+- *Selection overlay.* Source tint clips to the source RECT (instead of the
+  source disc) before the same clip-then-`evenodd`-punch fill the circle
+  uses; the zoom readout anchors at the source rect's NE corner. `drawZoomGrip`
+  gained an optional outward-angle parameter (default `π/4`, unchanged for the
+  circle); as of Addendum I (2026-08-09) the grip itself sits on the LENS's
+  own SE corner (not the source's), so the rect passes the LENS rect's own
+  actual SE angle, `atan2(a.height/2, a.width/2)`, instead of the source's.
+  The delete-button avoidance radius stays the source rect's half-diagonal
+  (circumscribed, conservative), unaffected by the handle ring's outset —
+  `positionSelectionControls` already carries more clearance margin than the
+  ring's worst-case reach beyond that half-diagonal; the existing
+  circle-vs-rect nearest-point machinery in `deleteButtonCornerFor` is
+  otherwise unchanged.
+- *Deviation from a strict mirror:* `deriveRectLensSize` returns
+  `{sourceHalfW, sourceHalfH, width, height, zoom}`, not just `{width, height,
+  zoom}` mirroring the circle's `{radius, zoom}` — the returned
+  `sourceHalfW`/`sourceHalfH` are the FINAL, post-clamp source half-extents
+  (`lensHalfW / zoom`, `lensHalfH / zoom` — the annotation's TRUE derived
+  source per D2's `source = lens / zoom` rule, not a pre-clamp intermediate
+  that Addendum D §D9-§D11's own widening/capping/flooring steps can move
+  away from), because the rect path derives its OWN source half-height
+  internally (unlike the circle, where `canvas.ts`'s `magnifierGeometry`
+  computes `defaultSourceRadius` itself and feeds it to BOTH
+  `deriveLensSizeForSource` and `placeLens`), and `canvas.ts`'s
+  `magnifierRectGeometry` needs those half-extents a second time, for
+  `placeRectLens`'s own gap computation.
+
+Every circle code path stays byte-identical: `connectorShape`,
+`magnifierSlideUpdate`, `placeLens`, `clampLensCenter`,
+`applyMagnifierCornerResize`, `deriveLensSizeForSource`, `magnifierSizeLimits`,
+`defaultSourceRadius`. No persisted-format migration — the union is plain
+data, `structuredClone`-safe, same as every other annotation.
 
 **Performance.** One extra `drawImage` per loupe per frame, on top of the
 full-background redraw `render()` already performs every frame — the same
@@ -870,6 +1097,19 @@ clears the selection. New annotations are not auto-selected after drawing —
 object whose two halves (lens and source) almost always need immediate
 adjustment, so on commit it is auto-selected and the active tool switches to
 Select (see "Magnifier (loupe)" below for the full rationale).
+
+**Second tap on an already-active tool** is a house convention for a tool
+with more than one facet, rather than a separate toolbar control per facet:
+the **Badge** tool's second tap (while already the active tool) opens/closes
+a bottom bar for pinning a fixed badge number instead of the
+auto-incrementing sequence (`badgebar.ts`); the **Magnifier** tool's second
+tap toggles its lens shape between circle and a resizable rectangle ("cube
+mode", `Editor.toggleMagnifierShape()`, 2026-08-08) and swaps the toolbar
+icon accordingly (`data-magnifier-icon` in `index.html`/`pwa/index.html` —
+see "Magnifier (loupe)" above). Both are one `if (tool-already-active) {
+toggle-this-tool's-own-facet(); return; }` branch in `app.ts`'s shared
+toolbar click handler, checked before the generic `editor.setTool(...)`
+fallthrough that every other tool button uses.
 
 The **Text** tool opens an in-canvas `<input>` overlay at the click point instead
 of the former blocking `window.prompt`. The overlay is DOM-only — appended to

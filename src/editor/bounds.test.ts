@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { boundsOf } from "./bounds";
-import type { ArrowAnnotation, RectAnnotation, TextAnnotation, HighlighterAnnotation, BadgeAnnotation, MagnifierAnnotation } from "./model";
+import type {
+  ArrowAnnotation,
+  RectAnnotation,
+  TextAnnotation,
+  HighlighterAnnotation,
+  BadgeAnnotation,
+  MagnifierAnnotation,
+  RectMagnifierAnnotation,
+} from "./model";
 
 // Trivial fake 2D context: only `font` (settable) and `measureText` are used
 // by boundsOf's text branch, same fixture as hittest.test.ts/resize.test.ts.
@@ -31,6 +39,16 @@ function badge(at: { x: number; y: number }, radius = 20): BadgeAnnotation {
 
 function magnifier(at: { x: number; y: number }, radius = 40, from = { x: 0, y: 0 }, zoom = 3): MagnifierAnnotation {
   return { id: "magnifier1", kind: "magnifier", color: "#ED107B", strokeWidth: 6, at, radius, zoom, from };
+}
+
+function rectMagnifier(
+  at: { x: number; y: number },
+  width = 80,
+  height = 40,
+  from = { x: 0, y: 0 },
+  zoom = 3,
+): RectMagnifierAnnotation {
+  return { id: "magnifier1", kind: "magnifier", shape: "rect", color: "#ED107B", strokeWidth: 6, at, width, height, zoom, from };
 }
 
 describe("boundsOf", () => {
@@ -75,6 +93,17 @@ describe("boundsOf", () => {
   it("magnifier: bounds are unaffected by `from`/`zoom` (the source circle is a satellite, not part of these bounds)", () => {
     const near = magnifier({ x: 100, y: 80 }, 40, { x: 110, y: 90 }, 5);
     const far = magnifier({ x: 100, y: 80 }, 40, { x: -5000, y: 5000 }, 1.5);
+    expect(boundsOf(near, measure)).toEqual(boundsOf(far, measure));
+  });
+
+  it("magnifier rect (D2): bounding box is the LENS rect, width x height, centered on `at` — the source rect plays no part", () => {
+    const m = rectMagnifier({ x: 100, y: 80 }, 80, 40, { x: 900, y: 900 }, 5);
+    expect(boundsOf(m, measure)).toEqual({ x: 60, y: 60, w: 80, h: 40 });
+  });
+
+  it("magnifier rect (D2): bounds are unaffected by `from`/`zoom`, same as the circle case", () => {
+    const near = rectMagnifier({ x: 100, y: 80 }, 80, 40, { x: 110, y: 90 }, 5);
+    const far = rectMagnifier({ x: 100, y: 80 }, 80, 40, { x: -5000, y: 5000 }, 1.5);
     expect(boundsOf(near, measure)).toEqual(boundsOf(far, measure));
   });
 });

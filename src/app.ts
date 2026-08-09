@@ -69,6 +69,26 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
     closeOpenPopover();
   };
 
+  // Magnifier lens shape toggle ("cube mode", D7) — verbatim second-tap
+  // pattern the badge tool established above: swap the toolbar button's icon
+  // between its circle/rect glyphs (`data-magnifier-icon`, index.html/
+  // pwa/index.html), mirroring `badgebar.ts`'s `updateIcon`'s `toggleAttribute
+  // ("hidden", …)` use — `hidden` is untyped on SVGElement (unlike
+  // HTMLElement) even though the boolean attribute works identically at the
+  // DOM level, so `toggleAttribute` sidesteps the missing IDL property.
+  const magnifierToolBtn = document.querySelector<HTMLButtonElement>('[data-tool="magnifier"]')!;
+  const magnifierIconCircle = magnifierToolBtn.querySelector<SVGElement>('[data-magnifier-icon="circle"]')!;
+  const magnifierIconRect = magnifierToolBtn.querySelector<SVGElement>('[data-magnifier-icon="rect"]')!;
+  function updateMagnifierIcon(shape: "circle" | "rect"): void {
+    magnifierIconCircle.toggleAttribute("hidden", shape !== "circle");
+    magnifierIconRect.toggleAttribute("hidden", shape !== "rect");
+  }
+  // Sync once at startup: harmless when the editor's default ("circle")
+  // already matches the HTML's default-visible icon, but keeps this in step
+  // with `editor.getMagnifierShape()` (the single source of truth) rather
+  // than relying on the two staying in sync by construction.
+  updateMagnifierIcon(editor.getMagnifierShape());
+
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.tool")) {
     btn.addEventListener("click", () => {
       if (btn.dataset.tool === "badge" && editor.tool === "badge") {
@@ -76,6 +96,12 @@ export function bootstrapEditor(io: PlatformIO): EditorHandle {
         // fixed-number bar instead of re-selecting the already-selected tool
         // (which would also incorrectly closeOpenPopover() below).
         badgeBar.toggle();
+        return;
+      }
+      if (btn.dataset.tool === "magnifier" && editor.tool === "magnifier") {
+        // Magnifier tool is already active: a second tap toggles circle<->rect
+        // lens mode instead of re-selecting the already-selected tool.
+        updateMagnifierIcon(editor.toggleMagnifierShape());
         return;
       }
       editor.setTool(btn.dataset.tool as Tool);

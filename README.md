@@ -18,6 +18,9 @@ to any other app with a single drag — all in seconds.
   full screen too
 - **Annotate** — outlined **arrows**, **rectangles**, in-canvas **text**, a freehand
   **highlighter**, and **numbered step badges**
+- **Magnifier** — call out a detail with a circular or rectangular loupe: it marks
+  the source spot and shows a zoomed lens connected to it; tap the toolbar button
+  again to switch between circle and rectangle lens
 - **Insert images** — add a screenshot, logo, or diagram as its own annotation object,
   via the toolbar button, `Ctrl+Shift+V`, or drag-and-drop
 - **Color & size presets** — an 8-color palette and S/M/L size presets apply to stroke
@@ -56,7 +59,7 @@ no App Store, no install required, though it can be added to your Home Screen
 (Share → Add to Home Screen) for a full-screen, offline-capable experience.
 
 **Works on iPhone:** choosing a photo from your library, every annotation tool
-(arrow, rectangle, text, highlighter, step badges, insert-image), crop,
+(arrow, rectangle, text, highlighter, step badges, magnifier, insert-image), crop,
 undo/redo, pasting an image, Save via the Share sheet, best-effort Copy,
 installing to the Home Screen, and offline use once installed.
 

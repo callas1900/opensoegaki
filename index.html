@@ -50,9 +50,12 @@
             <rect x="4" y="4" width="16" height="16" rx="4" /><text data-badge-glyph x="12" y="16" text-anchor="middle" font-size="11" font-weight="700" font-family="system-ui, sans-serif" fill="currentColor" stroke="none">1</text>
           </svg>
         </button>
-        <button data-tool="magnifier" class="tool" title="Magnifier (M)">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <button data-tool="magnifier" class="tool" title="Magnifier (M) — tap again for rectangle lens">
+          <svg data-magnifier-icon="circle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="6" cy="17.5" r="3.5" /><circle cx="15.5" cy="8.5" r="6" /><line x1="8.5" y1="15" x2="11.3" y2="12.7" />
+          </svg>
+          <svg data-magnifier-icon="rect" hidden viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="9" y="3" width="12" height="10" rx="2" /><line x1="9.5" y1="14" x2="11.5" y2="11.5" />
           </svg>
         </button>
         <button id="insert-image" title="Insert image">

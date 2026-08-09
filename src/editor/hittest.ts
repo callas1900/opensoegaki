@@ -11,23 +11,34 @@ import type { Annotation, MagnifierAnnotation, MagnifierPart, Point } from "./mo
 import { HIGHLIGHTER_WIDTH_SCALE } from "./model";
 import { type Bounds, boundsOf } from "./bounds";
 import { pivotOfAnnotation, unrotatePoint } from "./rotate";
-import { magnifierSourceRadius } from "./magnifier";
+import { magnifierSourceRadius, magnifierSourceRect, magnifierLensRect } from "./magnifier";
 // Shared with render.ts's drawMagnifier so the hit band always matches the
 // weight the source ring is actually drawn at (the connector is deliberately
 // not hit-testable, so this module only ever uses the ring's weight, even
 // though the same constant also governs the connector in render.ts).
-import { MAGNIFIER_MARKER_STROKE_RATIO } from "./render";
+// magnifierMarkerStroke (Addendum F, 2026-08-08, F2) is the one owner of
+// this derivation — render.ts's home, since it owns the ratio itself.
+import { magnifierMarkerStroke } from "./render";
 
-/** Topmost-first hit test: iterates the list from last (drawn on top) to first. */
+/**
+ * Topmost-first hit test: iterates the list from last (drawn on top) to
+ * first. `sourceMinHitHalf` (Addendum G, 2026-08-08, §G3) is REQUIRED — the
+ * same "required so TypeScript names every call site" precedent
+ * `applyResize`'s `canvasSize` parameter set (Addenda D §D9/§D10) — and is
+ * forwarded unchanged to `magnifierHitPart` for a magnifier annotation;
+ * every other kind ignores it. Pass `0` for pure-geometry callers (no
+ * minimum) — see `magnifierHitPart`'s own doc comment for what it does.
+ */
 export function hitTest(
   list: Annotation[],
   p: Point,
   measure: CanvasRenderingContext2D,
   tolerance: number,
+  sourceMinHitHalf: number,
 ): Annotation | null {
   for (let i = list.length - 1; i >= 0; i--) {
     const a = list[i];
-    if (hitsAnnotation(a, p, measure, tolerance)) return a;
+    if (hitsAnnotation(a, p, measure, tolerance, sourceMinHitHalf)) return a;
   }
   return null;
 }
@@ -37,6 +48,7 @@ function hitsAnnotation(
   p: Point,
   measure: CanvasRenderingContext2D,
   tolerance: number,
+  sourceMinHitHalf: number,
 ): boolean {
   // Inverse-rotate the pointer into the shape's local (unrotated) frame
   // before running the existing, unchanged per-kind test below. Rotation is
@@ -82,18 +94,42 @@ function hitsAnnotation(
       return pointInBounds(p, inflate(b, tolerance));
     }
     case "magnifier":
-      return magnifierHitPart(a, p, tolerance) !== null;
+      return magnifierHitPart(a, p, tolerance, sourceMinHitHalf) !== null;
   }
 }
 
 /**
- * Which half of a magnifier the pointer landed on — the lens disc wins where
- * the two overlap (paint order): the lens disc is tested first (filled disc,
- * `radius + tolerance`, the auto-badge precedent verbatim), then the source
- * disc (filled disc, `magnifierSourceRadius(a) + tolerance + markerStroke/2`
- * — the outer edge of the ring band that used to be the only hit-testable
- * part of the source region, so nothing that hit before stops hitting).
- * `null` when neither disc is hit.
+ * Which half of a magnifier the pointer landed on — the lens wins where the
+ * two overlap (paint order): the lens is tested first (filled disc, `radius +
+ * tolerance`, the auto-badge precedent verbatim — filled rect, inflated by
+ * `tolerance`, for the rect variant), then the source region. `null` when
+ * neither is hit.
+ *
+ * **`sourceMinHitHalf` (Addendum G, 2026-08-08, §G3) — REQUIRED, rect-only.**
+ * Pre-Addendum-G the rect source's hit region was exactly its drawn size
+ * (inflated by the marker band), same as the circle. Addendum G shrank the
+ * rect source's DRAWN size to a legibility-only floor
+ * (`MIN_MAGNIFIER_RECT_SOURCE_CSS_PX`, magnifier.ts) far below a fingertip —
+ * so the fingertip/operability requirement moved HERE, to the hit region,
+ * which is now independently floored per axis at `sourceMinHitHalf`
+ * (half-extent, CSS-px-derived, `canvas.ts`'s `magnifierSourceMinHit`):
+ *
+ * ```ts
+ * const src = magnifierSourceRect(a);            // centred on a.from by construction (D2)
+ * const pad = tolerance + markerStroke / 2;
+ * const hw = Math.max(src.w / 2 + pad, sourceMinHitHalf);
+ * const hh = Math.max(src.h / 2 + pad, sourceMinHitHalf);
+ * ```
+ *
+ * The CIRCLE branch ignores this parameter entirely — its own `minSource`
+ * floor (20 CSS px radius) already exceeds any minimum this module would
+ * apply, and touching the circle's hit geometry here would change TASK-49
+ * AC#1 surface for a problem the circle does not have. Required (not
+ * optional-with-a-default) so every call site must decide the value
+ * explicitly — the same "required so TypeScript names every call site"
+ * precedent `applyResize`'s `canvasSize` parameter set. Unit tests pass `0`
+ * ("no minimum" — pure geometry, matching the pre-Addendum-G behavior
+ * exactly for those fixtures).
  *
  * No unrotation: a magnifier can never carry a non-zero `angle`
  * (`canRotate("magnifier") === false` — see rotate.ts — and group rotation is
@@ -101,10 +137,20 @@ function hitsAnnotation(
  * owner of magnifier hit geometry; `hitsAnnotation`'s "magnifier" case is a
  * pure delegation to it.
  */
-export function magnifierHitPart(a: MagnifierAnnotation, p: Point, tolerance: number): MagnifierPart | null {
+export function magnifierHitPart(a: MagnifierAnnotation, p: Point, tolerance: number, sourceMinHitHalf: number): MagnifierPart | null {
+  const markerStroke = magnifierMarkerStroke(a.strokeWidth);
+  if (a.shape === "rect") {
+    const lensHit = pointInBounds(p, inflate(magnifierLensRect(a), tolerance));
+    if (lensHit) return "lens";
+    const src = magnifierSourceRect(a); // centred on a.from by construction (D2)
+    const pad = tolerance + markerStroke / 2;
+    const hw = Math.max(src.w / 2 + pad, sourceMinHitHalf);
+    const hh = Math.max(src.h / 2 + pad, sourceMinHitHalf);
+    const sourceHit = Math.abs(p.x - a.from.x) <= hw && Math.abs(p.y - a.from.y) <= hh;
+    return sourceHit ? "source" : null;
+  }
   if (Math.hypot(p.x - a.at.x, p.y - a.at.y) <= a.radius + tolerance) return "lens";
   const sourceRadius = magnifierSourceRadius(a);
-  const markerStroke = Math.max(1, a.strokeWidth * MAGNIFIER_MARKER_STROKE_RATIO);
   if (Math.hypot(p.x - a.from.x, p.y - a.from.y) <= sourceRadius + tolerance + markerStroke / 2) return "source";
   return null;
 }

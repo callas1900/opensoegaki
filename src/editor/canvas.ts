@@ -20,7 +20,7 @@ import {
   renumberBadges,
   translateAnnotation,
 } from "./model";
-import { renderAnnotations } from "./render";
+import { renderAnnotations, magnifierMarkerStroke } from "./render";
 import { History, type DocSnapshot } from "./history";
 import { type Bounds, boundsOf, fontString } from "./bounds";
 import { hitTest, magnifierHitPart } from "./hittest";
@@ -28,10 +28,15 @@ import { decodeClampedBitmap } from "./downscale";
 import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
 import {
   deriveLensSizeForSource,
+  deriveRectLensSize,
   placeLens,
+  placeRectLens,
   magnifierSourceRadius,
+  magnifierSourceRect,
+  magnifierLensRect,
   defaultSourceRadius,
   magnifierSlideUpdate,
+  magnifierRectSlideUpdate,
   magnifierSizeLimits,
   MAGNIFIER_GAP_PX,
   type MagnifierSizeLimits,
@@ -43,6 +48,7 @@ import {
   anchorPointFor,
   nearestHandle,
   deleteButtonCornerFor,
+  magnifierSourceBodyWins,
   MAGNIFIER_ZOOM_HANDLE_ANGLE,
   type ResizeHandle,
   type AvoidCircle,
@@ -75,11 +81,13 @@ const MAGNIFIER_READOUT_FONT_PX = 13;
 /**
  * `src-zoom` grip chrome (design note "magnifier UX brush-up"), CSS px,
  * all scale-compensated (`* cropScale()`) at the draw site (`drawZoomGrip`):
- * a 16 px accent disc (vs HANDLE_DRAW_PX = 10 for the lens's square corner
- * handles) with a white casing ring and three tangential ridges (perpendicular
- * to the outward radial direction — the scrollbar-thumb / bottom-sheet grab
- * idiom), textured so it reads as draggable at a glance and is unmistakable
- * from the plain square handles: circle vs square, 16 vs 10 px, accent-fill+
+ * a 16 px accent disc (vs HANDLE_DRAW_PX = 10 for the other square resize
+ * handles — a shape's own box/corner handles, or, for a rect magnifier as of
+ * Addendum I (2026-08-09), the 8 handles ringing the SOURCE rect) with a
+ * white casing ring and three tangential ridges (perpendicular to the
+ * outward radial direction — the scrollbar-thumb / bottom-sheet grab idiom),
+ * textured so it reads as draggable at a glance and is unmistakable from the
+ * plain square handles: circle vs square, 16 vs 10 px, accent-fill+
  * white-casing vs white-fill+accent-border, textured vs flat.
  */
 const MAGNIFIER_ZOOM_GRIP_PX = 16;
@@ -106,6 +114,35 @@ const HANDLE_HIT_PX = 12;
  * unaffected — this only ever multiplies when `pointerType === "touch"`.
  */
 const TOUCH_HIT_MULTIPLIER = 2;
+/**
+ * Minimum half-extent of a RECT magnifier's source drag target, CSS px
+ * (Addendum G, 2026-08-08, §G3). 44 CSS px across on touch — Apple HIG's
+ * minimum touch target — once `TOUCH_HIT_MULTIPLIER` is applied, same as
+ * every other touch-scaled hit region in this file. This is the fingertip
+ * floor that moved OUT of the rect source's drawn size (now a legibility-only
+ * floor, `magnifier.ts`'s `MIN_MAGNIFIER_RECT_SOURCE_CSS_PX`) and INTO its
+ * hit region instead — see `magnifierSourceMinHit`, below, and
+ * `hittest.ts`'s `magnifierHitPart` doc comment for the full rationale.
+ */
+const MAGNIFIER_SOURCE_MIN_HIT_HALF_PX = 11;
+/**
+ * Outset (CSS px, `* cropScale()` at the call site — screen-constant, like
+ * `HANDLE_DRAW_PX`) `resizeHandlesFor` inflates a rect magnifier's SOURCE
+ * rect by before ringing it with the 8 box handles (Addendum I, 2026-08-09,
+ * §I2). At the §G1 floor the drawn source is 8 CSS px across; eight
+ * `HANDLE_DRAW_PX = 10` squares centered on its corners/edges would cover it
+ * completely without an outset. At `outset = 14`, a drawn handle's INNER
+ * edge sits `14 - HANDLE_DRAW_PX/2 = 9` CSS px outside the source's own
+ * edge, leaving a few CSS px clear of the marker band at every source size
+ * and guaranteeing a non-empty body core on mouse. Threaded into both
+ * `resizeHandlesFor` call sites and `applyResize` (whose
+ * `applyMagnifierBoxResize` recomputes this same ring position to
+ * short-circuit an exact pointer match to a no-op, and inverts it for every
+ * genuine drag — see that function's doc comment; grabbing a handle without
+ * moving is an exact no-op either way) via the private `srcHandleOutset()`
+ * below, the one owner of the `* cropScale()` multiplication.
+ */
+const MAGNIFIER_SRC_HANDLE_OUTSET_PX = 14;
 /** Gap kept between the crop corner handle and the floating ✓/✗ controls, in CSS px. */
 const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
 /** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
@@ -206,6 +243,14 @@ export class Editor {
   // number instead of drawing from nextBadgeNumber(). Set via the toolbar's
   // digit-palette popover.
   private badgeFixedNumber: number | null = null;
+  // Magnifier lens shape mode ("cube mode", D7): session-scoped, mirrors
+  // `badgeFixedNumber`'s persistence — survives tool switches (so re-selecting
+  // the magnifier tool keeps the last-chosen shape) and resets only on reload.
+  // Toggled by a second tap on the already-active magnifier toolbar button
+  // (see `app.ts`'s click loop, badge's own second-tap precedent), never by
+  // `onToolChanged` — the icon must keep reflecting the mode across ordinary
+  // tool switches, not reset to "circle" every time.
+  private magnifierShape: "circle" | "rect" = "circle";
 
   private readonly history = new History();
   private draft: Annotation | null = null;
@@ -238,10 +283,16 @@ export class Editor {
   // 2026-08-01a's slide-to-aim revision) — mirrors `move`/`resize`/
   // `rotateDrag`'s "freeze a base at gesture start, recompute from it every
   // frame" anti-drift discipline. `offset` is `at - from` at pointerdown;
-  // `radius`/`zoom` are captured here (not just read off the draft) so
-  // "sizing cannot change mid-gesture" is structural: `magnifierSlideUpdate`
-  // only ever reads them from this frozen object, never from the live draft.
-  private magnifierPlace: { offset: Point; radius: number; zoom: number } | null = null;
+  // `radius`/`zoom` (circle) or `half` (rect, D4) are captured here (not just
+  // read off the draft) so "sizing cannot change mid-gesture" is structural:
+  // `magnifierSlideUpdate`/`magnifierRectSlideUpdate` only ever read them from
+  // this frozen object, never from the live draft. Tagged union on `shape` so
+  // `onMove`'s slide branch can dispatch to the matching per-shape update
+  // function without re-deriving which mode the in-flight gesture is in.
+  private magnifierPlace:
+    | { shape: "circle"; offset: Point; radius: number; zoom: number }
+    | { shape: "rect"; offset: Point; half: Point }
+    | null = null;
   // Crop tool state: the current region (starts as the full image), the
   // corner handle actively being dragged (if any), and the owned floating
   // ✓/✗ controls overlay + its resize-reposition handler. Never part of doc,
@@ -573,6 +624,17 @@ export class Editor {
     this.badgeFixedNumber = n === null ? null : Math.min(9999, Math.max(0, Math.round(n)));
   }
 
+  /** Current magnifier lens shape mode ("cube mode", D7). Read by the toolbar to pick which icon glyph to show. */
+  getMagnifierShape(): "circle" | "rect" {
+    return this.magnifierShape;
+  }
+
+  /** Flip circle<->rect (D7's second-tap toggle) and return the new mode, so the toolbar's icon-swap call site (`app.ts`) never needs a separate read-back. */
+  toggleMagnifierShape(): "circle" | "rect" {
+    this.magnifierShape = this.magnifierShape === "circle" ? "rect" : "circle";
+    return this.magnifierShape;
+  }
+
   /** Export sinks call this to materialize any in-flight inline text before reading `doc`. */
   commitPendingText(): void {
     this.commitTextEditor();
@@ -784,6 +846,13 @@ export class Editor {
    * compared directly, since `rotateHandleFor` already returns it in world
    * space. `r` (from `handleHitRadius(pointerType)`) is used for BOTH checks;
    * the knob's draw offset itself is never touch-enlarged.
+   *
+   * Addendum I (2026-08-09), §I6: for a rect magnifier, `magnifierSourceBodyWins`
+   * is consulted right after `nearest` is computed — if a press is at least
+   * as near the source center as to the nearest box handle, this returns
+   * `null` so the caller falls through to the ordinary `hitTest`-driven
+   * source-body drag instead of a handle drag. Magnifier is excluded from
+   * `canRotate`, so this never interacts with the knob tie-break below.
    */
   private rotateOrResizeTarget(
     selected: Annotation,
@@ -797,7 +866,8 @@ export class Editor {
     const angle = angleOf(selected);
     const r = this.handleHitRadius(pointerType);
     const localP = angle ? unrotatePoint(p, pivotOf(bounds), angle) : p;
-    const nearest = nearestHandle(resizeHandlesFor(selected, bounds), localP, r);
+    const nearest = nearestHandle(resizeHandlesFor(selected, bounds, this.srcHandleOutset()), localP, r);
+    if (magnifierSourceBodyWins(selected, localP, nearest)) return null;
 
     let knobDist: number | null = null;
     if (canRotate(selected.kind)) {
@@ -855,6 +925,15 @@ export class Editor {
           this.knobMargin(),
         )
       : null;
+    // N6 (Addendum D, 2026-08-08 reviewer nit): a rect magnifier's source
+    // rect is needed by two separate pieces of chrome below (source tint,
+    // the zoom readout's NE/SW anchor) — computed once here, not once per
+    // site, so there is one owner of "call magnifierSourceRect(a)" for this
+    // whole method. (A third consumer, the zoom-grip's outward angle, read
+    // this too pre-Addendum-I; as of Addendum I (2026-08-09) the grip moved
+    // to the LENS's own SE corner and reads `a.height`/`a.width` directly
+    // instead — see the `resizeHandlesFor` draw loop below.)
+    const rectSourceRect = a.kind === "magnifier" && a.shape === "rect" ? magnifierSourceRect(a) : null;
 
     ctx.save();
     if (angle) {
@@ -879,7 +958,17 @@ export class Editor {
       // within tolerance) the region where a press actually starts a
       // "source" drag (hittest.ts's magnifierHitPart tests the lens disc
       // FIRST — see its doc comment), including the fully-contained case,
-      // where the tint correctly vanishes.
+      // where the tint correctly vanishes. True for the CIRCLE without
+      // qualification. For the RECT (Addendum G, 2026-08-08, §G3): the tint
+      // is still drawn on the DRAWN source rect (`magnifierSourceRect(a)`),
+      // never the inflated hit region — it must keep meaning "this is the
+      // region being sampled", and `magnifierSourceMinHit`'s inflation is a
+      // pure hit-testing concern with no drawn counterpart (drawing it would
+      // imply a second, phantom source marker at the wrong size). So for a
+      // rect the tint is now a LOWER BOUND on the actual (fingertip-floored)
+      // draggable region, not an exact match — a press can start a "source"
+      // drag from just outside the tint's own edge when the drawn source is
+      // below the hit-target floor.
       //
       // An UN-clipped evenodd fill of a Path2D holding both full circles does
       // NOT do this on its own: evenodd only cancels out the OVERLAP between
@@ -902,32 +991,59 @@ export class Editor {
       // what punches the overlap (within the clip, evenodd on both discs
       // yields exactly source-minus-lens). Neither alone is sufficient; both
       // together, in this order, are.
-      const sourceRadius = magnifierSourceRadius(a);
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
-      ctx.clip();
-      // The two arc() calls join with an implicit straight segment (end of
-      // the first circle to the start of the second), which stays harmless
-      // only because it exactly coincides with the implicit closing segment,
-      // so the pair cancels for evenodd parity — changing a start angle,
-      // adding a third disc, or inserting closePath() between them breaks
-      // the fill.
-      const tint = new Path2D();
-      tint.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
-      tint.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
-      ctx.globalAlpha = MAGNIFIER_SOURCE_TINT_ALPHA;
-      ctx.fillStyle = PALETTE[0];
-      ctx.fill(tint, "evenodd");
-      ctx.restore();
+      //
+      // Rect (D6): same clip+evenodd recipe, `ctx.rect`/`path.rect` in place
+      // of `arc` — the two implicit-closing-segment/winding arguments above
+      // hold identically for two rects.
+      if (a.shape === "rect") {
+        const sourceRect = rectSourceRect!; // N6: hoisted at the top of drawSelectionOverlay
+        const lensRect = magnifierLensRect(a);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(sourceRect.x, sourceRect.y, sourceRect.w, sourceRect.h);
+        ctx.clip();
+        const tint = new Path2D();
+        tint.rect(sourceRect.x, sourceRect.y, sourceRect.w, sourceRect.h);
+        tint.rect(lensRect.x, lensRect.y, lensRect.w, lensRect.h);
+        ctx.globalAlpha = MAGNIFIER_SOURCE_TINT_ALPHA;
+        ctx.fillStyle = PALETTE[0];
+        ctx.fill(tint, "evenodd");
+        ctx.restore();
+      } else {
+        const sourceRadius = magnifierSourceRadius(a);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
+        ctx.clip();
+        // The two arc() calls join with an implicit straight segment (end of
+        // the first circle to the start of the second), which stays harmless
+        // only because it exactly coincides with the implicit closing segment,
+        // so the pair cancels for evenodd parity — changing a start angle,
+        // adding a third disc, or inserting closePath() between them breaks
+        // the fill.
+        const tint = new Path2D();
+        tint.arc(a.from.x, a.from.y, sourceRadius, 0, 2 * Math.PI);
+        tint.arc(a.at.x, a.at.y, a.radius, 0, 2 * Math.PI);
+        ctx.globalAlpha = MAGNIFIER_SOURCE_TINT_ALPHA;
+        ctx.fillStyle = PALETTE[0];
+        ctx.fill(tint, "evenodd");
+        ctx.restore();
+      }
     }
 
     const side = HANDLE_DRAW_PX * this.cropScale();
     const half = side / 2;
     ctx.lineWidth = 1.5;
-    for (const handle of resizeHandlesFor(a, b)) {
+    for (const handle of resizeHandlesFor(a, b, this.srcHandleOutset())) {
       if (handle.shape === "grip") {
-        this.drawZoomGrip(ctx, handle.pos);
+        // B2 (Addendum D, 2026-08-08), ridge angle RE-TARGETED by Addendum I
+        // (2026-08-09): outward angle defaults to the circle's fixed
+        // MAGNIFIER_ZOOM_HANDLE_ANGLE inside drawZoomGrip itself; a rect
+        // magnifier now passes the LENS rect's own actual SE angle (the grip
+        // moved there, I5) instead of the source's, so the ridge orientation
+        // still reads as "radially outward" for a non-square lens too.
+        const gripAngle = a.kind === "magnifier" && a.shape === "rect" ? Math.atan2(a.height / 2, a.width / 2) : undefined;
+        this.drawZoomGrip(ctx, handle.pos, gripAngle);
       } else {
         ctx.fillStyle = "rgba(255,255,255,0.95)";
         ctx.fillRect(handle.pos.x - half, handle.pos.y - half, side, side);
@@ -938,11 +1054,10 @@ export class Editor {
 
     if (a.kind === "magnifier") {
       // Zoom readout (design note): selection chrome only, drawn beside the
-      // source ring — never through renderAnnotations, so it can never reach
-      // exportPng(). Two-pass text (white halo + accent fill), the same
-      // legibility trick render.ts's drawText/drawArrow use, since the ring
+      // source marker — never through renderAnnotations, so it can never
+      // reach exportPng(). Two-pass text (white halo + accent fill), the same
+      // legibility trick render.ts's drawText/drawArrow use, since the marker
       // can sit over an arbitrarily light or dark part of the image.
-      const sourceRadius = magnifierSourceRadius(a);
       // One decimal, trailing ".0" trimmed: "2.4×", but "3×" not "3.0×".
       const zoomDigits = a.zoom.toFixed(1);
       const label = (zoomDigits.endsWith(".0") ? zoomDigits.slice(0, -2) : zoomDigits) + "×";
@@ -951,19 +1066,34 @@ export class Editor {
       const textWidth = ctx.measureText(label).width;
       const offset = MAGNIFIER_READOUT_MARGIN_PX * this.cropScale() + half;
 
-      // Natural placement: above-right (NE) of the source ring. When that
-      // would leave the canvas — the source ring sitting near the top or
+      // Natural placement: above-right (NE) of the source marker. When that
+      // would leave the canvas — the source marker sitting near the top or
       // right edge — mirror to below-left (SW) instead: the same
       // problem-class fix `rotateHandleFor`/`knobMargin` use for the rotate
       // knob (try the natural spot, fall back to the opposite side). Chrome
       // only, so this never touches exported pixels — it only keeps the
       // on-screen readout legible.
-      const neX = a.from.x + sourceRadius * Math.SQRT1_2 + offset;
-      const neY = a.from.y - sourceRadius * Math.SQRT1_2 - offset;
+      //
+      // Circle: the NE/SW anchor is the point on the source RING at +-45deg
+      // (`a.from +- sourceRadius*SQRT1_2` on each axis) — computed exactly as
+      // before this refactor, so the numeric result is unchanged. Rect (D6):
+      // the anchor is simply the source RECT's own NE/SW corner — no trig
+      // needed, the rect already has a corner there.
+      let neAnchor: Point;
+      let swAnchor: Point;
+      if (a.shape === "rect") {
+        const sourceRect = rectSourceRect!; // N6: hoisted at the top of drawSelectionOverlay
+        neAnchor = { x: sourceRect.x + sourceRect.w, y: sourceRect.y };
+        swAnchor = { x: sourceRect.x, y: sourceRect.y + sourceRect.h };
+      } else {
+        const sourceRadius = magnifierSourceRadius(a);
+        neAnchor = { x: a.from.x + sourceRadius * Math.SQRT1_2, y: a.from.y - sourceRadius * Math.SQRT1_2 };
+        swAnchor = { x: a.from.x - sourceRadius * Math.SQRT1_2, y: a.from.y + sourceRadius * Math.SQRT1_2 };
+      }
+      const neX = neAnchor.x + offset;
+      const neY = neAnchor.y - offset;
       const mirror = neX + textWidth > this.canvas.width || neY - fontPx / 2 < 0;
-      const labelPos = mirror
-        ? { x: a.from.x - sourceRadius * Math.SQRT1_2 - offset, y: a.from.y + sourceRadius * Math.SQRT1_2 + offset }
-        : { x: neX, y: neY };
+      const labelPos = mirror ? { x: swAnchor.x - offset, y: swAnchor.y + offset } : { x: neX, y: neY };
 
       ctx.textAlign = mirror ? "right" : "left";
       ctx.textBaseline = "middle";
@@ -1109,8 +1239,21 @@ export class Editor {
       // `avoid` when the annotation is actually unrotated. True for every
       // magnifier today (`canRotate` excludes "magnifier"), but this keeps
       // the assumption enforced at the call site rather than silently relied
-      // on inside the helper.
-      a.kind === "magnifier" && angle === 0 ? { center: a.from, radius: magnifierSourceRadius(a) } : null,
+      // on inside the helper. Rect (D6): radius = the source rect's own
+      // half-diagonal — a circumscribing circle around the rect, conservative
+      // (never smaller than the rect's own true clearance need) but keeps
+      // `deleteButtonCornerFor`'s AvoidCircle machinery unchanged.
+      //
+      // Addendum I (2026-08-09), §I7: explicitly NOT re-derived from the
+      // handle ring even though the 8 box handles now sit outside the source
+      // rect by `srcHandleOutset` — `positionSelectionControls` already
+      // inflates its own clearance check by ~24 CSS px (touch handle radius)
+      // + `SELECTION_CONTROLS_MARGIN_PX`, comfortably more than the ring's
+      // own worst-case reach beyond this half-diagonal (`outset * sqrt(2) ~=
+      // 19.8` CSS px at a corner), so no extra margin is needed here.
+      a.kind === "magnifier" && angle === 0
+        ? { center: a.from, radius: a.shape === "rect" ? Math.hypot(rectSourceRect!.w, rectSourceRect!.h) / 2 : magnifierSourceRadius(a) }
+        : null,
     );
   }
 
@@ -1124,14 +1267,18 @@ export class Editor {
    * Geometry (design note §3): an accent-filled disc with a white casing
    * ring, plus three ridges running TANGENTIALLY (perpendicular to the
    * outward radial direction `u`) — the scrollbar-thumb / bottom-sheet grab
-   * idiom. `u` is derived from `MAGNIFIER_ZOOM_HANDLE_ANGLE` (resize.ts) —
-   * the same angle the handle's rim position is computed from — so this
-   * never hardcodes a second copy of that constant.
+   * idiom. `angle` (B2, Addendum D 2026-08-08) is the outward radial
+   * direction the ridges orient to; defaults to `MAGNIFIER_ZOOM_HANDLE_ANGLE`
+   * (resize.ts) — the same angle the CIRCLE handle's rim position is
+   * computed from, so the default case never hardcodes a second copy of that
+   * constant. The caller passes a different angle for a rect magnifier (the
+   * source rect's own actual SE angle), so the ridge orientation still reads
+   * as "radially outward from the source" for a non-square source rect.
    */
-  private drawZoomGrip(ctx: CanvasRenderingContext2D, pos: Point): void {
+  private drawZoomGrip(ctx: CanvasRenderingContext2D, pos: Point, angle: number = MAGNIFIER_ZOOM_HANDLE_ANGLE): void {
     const s = this.cropScale();
     const r = (MAGNIFIER_ZOOM_GRIP_PX / 2) * s;
-    const u = { x: Math.cos(MAGNIFIER_ZOOM_HANDLE_ANGLE), y: Math.sin(MAGNIFIER_ZOOM_HANDLE_ANGLE) };
+    const u = { x: Math.cos(angle), y: Math.sin(angle) };
     const t = { x: -u.y, y: u.x };
 
     ctx.save();
@@ -1484,6 +1631,57 @@ export class Editor {
     return HANDLE_HIT_PX * touchMultiplier * this.cropScale();
   }
 
+  /**
+   * Minimum half-extent (bitmap px) of a rect magnifier's source drag
+   * target, threaded into `hittest.ts`'s `magnifierHitPart`/`hitTest` as
+   * their required `sourceMinHitHalf` parameter (Addendum G, 2026-08-08,
+   * §G3) — mirrors `handleHitRadius` exactly, same touch-multiplier /
+   * `cropScale()` composition, different base constant.
+   *
+   * **Grip vs. body at the new minimum** (verify on device, per TASK-50's
+   * device checklist): at the `minRectSource` floor (drawn source half-
+   * extent 4 CSS px on each axis), the `src-zoom` grip's own touch hit
+   * radius is `HANDLE_HIT_PX(12) * TOUCH_HIT_MULTIPLIER(2)` = 24 CSS px,
+   * centred at `from + (4, 4)` (the source rect's SE corner); the inflated
+   * source hit region is a `2 * MAGNIFIER_SOURCE_MIN_HIT_HALF_PX` = 44 CSS
+   * px square (touch), centred on `from`. The square's FAR (NW) corner sits
+   * `hypot(22 + 4, 22 + 4)` = **~36.8** CSS px from the grip's centre — well
+   * outside the grip's 24 CSS px radius (for reference, `hypot(22, 22) ~=
+   * 31.1` is the distance if the drawn source had shrunk all the way to 0;
+   * neither figure is close to the grip's radius, so the corner is safe at
+   * every drawn-source size down to the floor). Since handles are hit-
+   * tested BEFORE `hitTest` (grip wins ties), the grip's disc claims
+   * whatever it overlaps; the guaranteed-safe pocket that survives in the
+   * far corner is roughly a **9 x 9 CSS px** right triangle at the square's
+   * NW corner. Shifted to the grip's own centre, that corner sits at
+   * `(-26, -26)` (26 = 22 + 4, the square's half-extent plus the grip's own
+   * offset from `from`); along that corner's diagonal, the grip's disc
+   * boundary (radius 24) crosses at `24 / sqrt(2) ~= 17` on each axis, so
+   * each leg of the safe triangle is `26 - 24/sqrt(2) ~= 9` CSS px before
+   * the disc intrudes. This is the mechanism that replaces `minSource = 20`'s
+   * "16 CSS px lune" argument (magnifier.ts's own doc comment) for the rect
+   * variant, where the DRAWN source can now be much smaller than the
+   * grip's own hit radius — it is tight, and is the same property TASK-49
+   * AC#8 asserts for the circle; confirm it holds by touch on device.
+   */
+  private magnifierSourceMinHit(pointerType: string): number {
+    const touchMultiplier = pointerType === "touch" ? TOUCH_HIT_MULTIPLIER : 1;
+    return MAGNIFIER_SOURCE_MIN_HIT_HALF_PX * touchMultiplier * this.cropScale();
+  }
+
+  /**
+   * `MAGNIFIER_SRC_HANDLE_OUTSET_PX` in bitmap px (Addendum I, 2026-08-09).
+   * NOT touch-multiplied — this is drawn/hit geometry for the handle RING
+   * itself (like `HANDLE_DRAW_PX`), not a fingertip floor; the box handles'
+   * own grab radius is already touch-scaled independently via
+   * `handleHitRadius`. The one owner of the `* cropScale()` multiplication —
+   * every `resizeHandlesFor`/`applyResize` call site below reads this
+   * instead of re-deriving it.
+   */
+  private srcHandleOutset(): number {
+    return MAGNIFIER_SRC_HANDLE_OUTSET_PX * this.cropScale();
+  }
+
   /** Resize cursor for a given corner handle. */
   private cursorForHandle(h: CropHandle): string {
     return h === "nw" || h === "se" ? "nwse-resize" : "nesw-resize";
@@ -1522,17 +1720,17 @@ export class Editor {
   }
 
   /**
-   * Derive the lens's `{at, radius, zoom}` for a magnifier being created at
-   * `from` — the single place `defaultSourceRadius`/`deriveLensSizeForSource`
-   * (S/M/L target sizing, magnifier.ts) and `placeLens` (auto-placement,
-   * magnifier.ts) are composed into one annotation-shaped result, with
-   * `magnifierLimits()` (Addendum B, 2026-08-02) computed once and threaded
-   * through both. Simplified from `magnifierGeometry(from, sourceRadius)` so
-   * `onDown` cannot forget to apply the operability floor — this is now the
-   * ONLY place `defaultSourceRadius` is called. Since Addendum A
-   * (2026-08-01a), called only from `onDown`, once per gesture: sizing and
-   * placement are frozen at pointerdown (`magnifierPlace`) and never
-   * recomputed during the slide (see `magnifierSlideUpdate`).
+   * Derive the lens's `{at, radius, zoom}` for a CIRCLE magnifier being
+   * created at `from` — the single place `defaultSourceRadius`/
+   * `deriveLensSizeForSource` (S/M/L target sizing, magnifier.ts) and
+   * `placeLens` (auto-placement, magnifier.ts) are composed into one
+   * annotation-shaped result, with `magnifierLimits()` (Addendum B,
+   * 2026-08-02) computed once and threaded through both. Simplified from
+   * `magnifierGeometry(from, sourceRadius)` so `onDown` cannot forget to
+   * apply the operability floor. Since Addendum A (2026-08-01a), called only
+   * from `onDown`, once per gesture: sizing and placement are frozen at
+   * pointerdown (`magnifierPlace`) and never recomputed during the slide (see
+   * `magnifierSlideUpdate`). Rect twin: `magnifierRectGeometry` below (D4).
    */
   private magnifierGeometry(from: Point): { at: Point; radius: number; zoom: number } {
     const canvasSize = { w: this.canvas.width, h: this.canvas.height };
@@ -1541,6 +1739,79 @@ export class Editor {
     const { radius, zoom } = deriveLensSizeForSource(sourceRadius, this.size, canvasSize, limits);
     const at = placeLens(from, sourceRadius, radius, canvasSize, MAGNIFIER_GAP_PX);
     return { at, radius, zoom };
+  }
+
+  /**
+   * Rect ("cube mode", D4) twin of `magnifierGeometry`: composes
+   * `deriveRectLensSize` (S/M/L target sizing, which owns BOTH the source and
+   * lens half-extent derivation for the rect case — unlike the circle split
+   * above, see that function's own doc comment for why) and `placeRectLens`
+   * (auto-placement) into one `{at, width, height, zoom}` result. Same
+   * "called once per gesture, frozen into `magnifierPlace`" discipline as
+   * `magnifierGeometry`.
+   *
+   * **`strokeWidth` param and the inflated gap (Addendum F, 2026-08-08, §F1
+   * — post-Addendum-E follow-up; the guard this refers to was later carried
+   * over unchanged into Addendum G's `magnifierRectConnectorLines`, which
+   * replaced the wedge/pentagon `magnifierRectConnectorShape` outright).**
+   * Addendum E §E4 widened the rect connector's suppression guard to
+   * inflate the SOURCE half-extents by `markerStroke/2` (the source marker
+   * is stroked CENTERED
+   * on the source rect's boundary, so the painted rim extends that far
+   * beyond `magnifierSourceRect`) — correct for the guard, but it means a
+   * freshly created magnifier placed with the bare `MAGNIFIER_GAP_PX`
+   * (12px, rect-to-rect) can land its connector inside the now-wider
+   * suppression band whenever `markerStroke/2 > MAGNIFIER_GAP_PX -
+   * MAGNIFIER_CONNECTOR_MIN_GAP_PX` (10px) — reachable on the web target's
+   * large `docScale` (e.g. a 2532px-wide iPhone photo at the L preset:
+   * `strokeWidth ~= 33.8`, `markerStroke/2 ~= 15.2 > 10`), where the
+   * connector would be silently suppressed on creation. Fix: the gap PASSED
+   * TO `placeRectLens` is inflated by the same `markerStroke/2` term the
+   * guard itself subtracts —
+   * `MAGNIFIER_GAP_PX + magnifierMarkerStroke(strokeWidth) / 2` — so
+   * `MAGNIFIER_GAP_PX` now means "clear space between the PAINTED source
+   * rim and the lens rect", the same quantity the guard actually checks.
+   * This restores the invariant that a freshly created rect magnifier
+   * always clears its own suppression guard by the full
+   * `MAGNIFIER_GAP_PX` (not just `MAGNIFIER_CONNECTOR_MIN_GAP_PX`), and
+   * self-corrects if `MAGNIFIER_MARKER_STROKE_RATIO` is ever retuned again
+   * (it already was once, in TASK-49). `strokeWidth` is the caller's
+   * EFFECTIVE creation stroke (`base.strokeWidth`, i.e. `this.strokeWidth *
+   * this.docScale` — already `docScale`-adjusted at the call site), not
+   * `this.strokeWidth` — using the raw picker value would under-inflate on
+   * the web target, where `docScale` is what actually grows the stroke.
+   * The circle's `magnifierGeometry` is deliberately untouched:
+   * `trimmedConnectorAxis` (the circle's guard) has no band-width term, so a
+   * circle connector is suppressed only on true rim overlap — this bug does
+   * not exist there, and `MAGNIFIER_GAP_PX` scaling by `docScale` for both
+   * shapes was considered and rejected (it would change circle creation
+   * layout, a device-verified Done surface, for a problem the circle
+   * doesn't have, and `docScale` is the wrong variable regardless — the
+   * guard subtracts `markerStroke/2`, not a global scale).
+   *
+   * **`placeRectLens` itself is intentionally unchanged (§F3)** — no `w1`
+   * term added inside it; it stays a pure "place a box with `gap`
+   * clearance" function, and the inflated `gap` argument already covers
+   * both axes and all 8 `PLACEMENT_DIRS` uniformly. Two consequences of
+   * that choice, recorded rather than "fixed": (1) **clamp fallback** — when
+   * no candidate fits fully on-canvas, `placeRectLens` returns a clamped
+   * candidate whose clearance can fall below the guard (the one documented
+   * exception to the "always clears" invariant above; the circle has the
+   * same exception, simply overlapping there); (2) **slide-to-aim** —
+   * `magnifierRectSlideUpdate` translates a frozen `offset`, so the
+   * creation clearance is preserved for the whole gesture, except where the
+   * per-frame on-canvas clamp pulls the lens back toward the source at a
+   * canvas edge — pre-existing, shape-symmetric with the circle, and
+   * legitimate (the user is pushing the two together), not a regression to
+   * correct.
+   */
+  private magnifierRectGeometry(from: Point, strokeWidth: number): { at: Point; width: number; height: number; zoom: number } {
+    const canvasSize = { w: this.canvas.width, h: this.canvas.height };
+    const limits = this.magnifierLimits();
+    const { sourceHalfW, sourceHalfH, width, height, zoom } = deriveRectLensSize(this.size, canvasSize, limits);
+    const gap = MAGNIFIER_GAP_PX + magnifierMarkerStroke(strokeWidth) / 2;
+    const at = placeRectLens(from, sourceHalfW, sourceHalfH, width / 2, height / 2, canvasSize, gap);
+    return { at, width, height, zoom };
   }
 
   private onDown(p: Point, e: PointerEvent): void {
@@ -1592,7 +1863,7 @@ export class Editor {
     // select/move drag underneath the reopened editor. preventDefault() is
     // the same focus guard as the text-tool branch above.
     if (tool === "select" && e.detail >= 2) {
-      const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
+      const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance(), this.magnifierSourceMinHit(e.pointerType));
       if (hit && hit.kind === "text") {
         e.preventDefault();
         this.openTextEditor(hit.at, {
@@ -1638,7 +1909,7 @@ export class Editor {
 
       this.resize = null;
       const tol = this.tolerance();
-      const hit = hitTest(this.doc.annotations, p, this.ctx, tol);
+      const hit = hitTest(this.doc.annotations, p, this.ctx, tol, this.magnifierSourceMinHit(e.pointerType));
       if (hit) {
         this.selectedId = hit.id;
         // Which half of a magnifier this grab targets, decided once here by
@@ -1646,7 +1917,7 @@ export class Editor {
         // `move`'s field doc comment. The `?? "lens"` fallback is defensive
         // only (hitTest's magnifier case IS magnifierHitPart, so they cannot
         // disagree); it must never become load-bearing.
-        const part: "all" | MagnifierPart = hit.kind === "magnifier" ? (magnifierHitPart(hit, p, tol) ?? "lens") : "all";
+        const part: "all" | MagnifierPart = hit.kind === "magnifier" ? (magnifierHitPart(hit, p, tol, this.magnifierSourceMinHit(e.pointerType)) ?? "lens") : "all";
         // Do not push history yet: a pure click that never moves is not undoable.
         this.move = { original: structuredClone(hit), anchor: p, moved: false, part };
       } else {
@@ -1689,16 +1960,24 @@ export class Editor {
       this.draft = { ...base, kind: "highlight", points: [p] };
     } else if (tool === "magnifier") {
       // Slide-to-aim creation (Addendum A, 2026-08-01a): pointerdown plants
-      // the source at `p` with the default radius, derives {radius, zoom}
-      // and the lens's auto-placement ONCE, then FREEZES `offset = at - from`
-      // plus `radius`/`zoom` in `magnifierPlace` for the whole gesture — the
+      // the source at `p` with the default size, derives the lens's size/zoom
+      // and its auto-placement ONCE, then FREEZES `offset = at - from` plus
+      // the sizing fields in `magnifierPlace` for the whole gesture — the
       // same "recompute from a fixed base, never incrementally" discipline
       // `move`/`resize`/`rotateDrag` already use. `onMove` (below) only ever
       // reads size/placement back from this frozen object, so a slide can
-      // never change what onDown decided.
-      const { at, radius, zoom } = this.magnifierGeometry(p);
-      this.magnifierPlace = { offset: { x: at.x - p.x, y: at.y - p.y }, radius, zoom };
-      this.draft = { ...base, kind: "magnifier", from: p, at, radius, zoom };
+      // never change what onDown decided. Dispatches on `magnifierShape`
+      // (D7's mode toggle) between the circle path (unchanged) and the rect
+      // ("cube mode", D4) path — `magnifierRectGeometry`/`magnifierRectSlideUpdate`.
+      if (this.magnifierShape === "rect") {
+        const { at, width, height, zoom } = this.magnifierRectGeometry(p, base.strokeWidth);
+        this.magnifierPlace = { shape: "rect", offset: { x: at.x - p.x, y: at.y - p.y }, half: { x: width / 2, y: height / 2 } };
+        this.draft = { ...base, kind: "magnifier", shape: "rect", from: p, at, width, height, zoom };
+      } else {
+        const { at, radius, zoom } = this.magnifierGeometry(p);
+        this.magnifierPlace = { shape: "circle", offset: { x: at.x - p.x, y: at.y - p.y }, radius, zoom };
+        this.draft = { ...base, kind: "magnifier", from: p, at, radius, zoom };
+      }
     }
     this.render();
   }
@@ -1738,7 +2017,16 @@ export class Editor {
       // geometry contract). Every step below is gated on `angle`, so this is
       // an exact no-op — identical code path — at angle 0.
       const localP = angle ? unrotatePoint(p, pivotOf(bounds), angle) : p;
-      let updated = applyResize(original, bounds, handle, localP, shiftKey, this.magnifierLimits());
+      let updated = applyResize(
+        original,
+        bounds,
+        handle,
+        localP,
+        shiftKey,
+        this.magnifierLimits(),
+        { w: this.canvas.width, h: this.canvas.height },
+        this.srcHandleOutset(),
+      );
       if (angle) {
         const anchorLocal = anchorPointFor(original, bounds, handle);
         const boundsAfter = boundsOf(updated, this.ctx);
@@ -1817,13 +2105,23 @@ export class Editor {
         // Slide-to-aim (Addendum A): the source follows the pointer exactly
         // (`from = p`) and the lens rides along at the FROZEN offset from
         // `magnifierPlace` (captured once at pointerdown), clamped back
-        // on-canvas — `radius`/`zoom` are deliberately untouched here, they
-        // cannot change mid-slide. The finger occludes the source, never the
-        // lens, so the lens is the live viewfinder the user aims with.
+        // on-canvas — the frozen size fields are deliberately untouched here,
+        // they cannot change mid-slide. The finger occludes the source, never
+        // the lens, so the lens is the live viewfinder the user aims with.
+        // Dispatches on `magnifierPlace.shape` (set together with the draft
+        // in onDown, so it always agrees with `this.draft.shape`) to the
+        // matching per-shape slide-update function (D4).
         const canvasSize = { w: this.canvas.width, h: this.canvas.height };
-        const { from, at } = magnifierSlideUpdate(p, this.magnifierPlace!, canvasSize);
-        this.draft.from = from;
-        this.draft.at = at;
+        const place = this.magnifierPlace!;
+        if (place.shape === "rect") {
+          const { from, at } = magnifierRectSlideUpdate(p, place, canvasSize);
+          this.draft.from = from;
+          this.draft.at = at;
+        } else {
+          const { from, at } = magnifierSlideUpdate(p, place, canvasSize);
+          this.draft.from = from;
+          this.draft.at = at;
+        }
       }
       this.render();
       return;
@@ -1837,7 +2135,7 @@ export class Editor {
       } else if (target?.kind === "resize") {
         this.canvas.style.cursor = this.cursorForResizeHandle(target.handle);
       } else {
-        const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance());
+        const hit = hitTest(this.doc.annotations, p, this.ctx, this.tolerance(), this.magnifierSourceMinHit(pointerType));
         this.canvas.style.cursor = hit ? "move" : "default";
       }
     } else if (tool === "crop" && this.crop) {

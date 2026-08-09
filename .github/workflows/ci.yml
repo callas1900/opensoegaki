@@ -21,7 +21,7 @@ jobs:
       # e2e (TASK-39): real-iPhone-viewport smoke suite against the actual
       # web build (see docs/WEB.md's preview:web caveat — build first).
       - run: pnpm build:web
-      - run: npx playwright install --with-deps webkit
+      - run: npx playwright install --with-deps webkit chromium
       - run: pnpm test:e2e
 
   rust:

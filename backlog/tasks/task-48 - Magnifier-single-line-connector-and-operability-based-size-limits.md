@@ -4,7 +4,7 @@ title: 'Magnifier: single-line connector and operability-based size limits'
 status: Done
 assignee: []
 created_date: '2026-08-02 03:14'
-updated_date: '2026-08-06 05:00'
+updated_date: '2026-08-09 13:15'
 labels: []
 dependencies: []
 ordinal: 65000
@@ -38,4 +38,8 @@ Verification: pnpm check clean; pnpm test 281/281; pnpm build:web + pnpm test:e2
 TASK-49 (2026-08-06) raises both magnifier stroke ratios (MAGNIFIER_LENS_STROKE_RATIO 1.5 introduced, MAGNIFIER_MARKER_STROKE_RATIO 0.6 -> 0.9), changing the rendered/exported APPEARANCE of pre-existing annotations. AC#6's subject is stored data and geometry (never mutated at render/load), not pixel-identical output across releases, so it is not violated. TASK-49 also raises MIN_MAGNIFIER_SOURCE_RADIUS_CSS_PX 16 -> 20 (AC#3 amended accordingly); the amended AC#3 20 CSS px floor and AC#8 short-connector legibility under the thicker rims still need re-verification on a real iPhone as part of TASK-49.
 
 Historical note (2026-08-06, TASK-49): 'source >= 16' in the notes above predates TASK-49, which raised the floor to 20 CSS px (AC#3 amended).
+
+Addendum G (2026-08-08, TASK-50): the rect magnifier variant delivers AC#3's *intent* (a finger-operable source) through an independently-floored hit target (hittest.ts, MAGNIFIER_SOURCE_MIN_HIT_HALF_PX) rather than through the drawn source size — the rect source's drawn/legibility floor (minRectSource) is deliberately smaller than this task's circle-only minSource. No amendment to this task's own ACs (all circle-scoped); recorded here per the user's ruling on the TASK-50 AC#4 conflict.
+
+Addendum I (2026-08-09, TASK-50): AC#6 gains a rect-specific carve-out for the SOURCE-authoritative box-handle gesture. The zoom grip (src-zoom, now on the LENS's SE corner per Addendum I §I5) holds the SOURCE fixed by construction and therefore does NOT snap a below-floor source back into range on its own -- only the source's 8 box handles enforce minRectSource (Addendum I §I4). This is not a regression of AC#6's own circle-scoped guarantee (unchanged) nor of the rect's AC#6 intent overall (a size-affecting edit via the box handles still snaps into range); it only narrows WHICH rect gesture does the snapping, recorded here since AC#6's wording ('their first size-affecting edit') did not originally distinguish between a rect magnifier's two different resize gestures.
 <!-- SECTION:NOTES:END -->

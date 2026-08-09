@@ -94,12 +94,19 @@ export function boundsOf(a: Annotation, measure: CanvasRenderingContext2D): Boun
     case "image":
       return { x: a.at.x, y: a.at.y, w: a.width, h: a.height };
     case "magnifier":
-      // The LENS circle's bounding square only — the marquee, resize handles
-      // and rotation pivot all want the lens, not a union with the source.
-      // The source circle is a satellite with its own drag surface and its
-      // own hit region (see magnifier.ts's magnifierSourceRadius/
+      // The LENS's bounding box only — the marquee, resize handles and
+      // rotation pivot all want the lens, not a union with the source. The
+      // source region is a satellite with its own drag surface and its own
+      // hit region (see magnifier.ts's magnifierSourceRadius/
       // magnifierSourceRect, hittest.ts's magnifierHitPart, and resize.ts's
-      // src-zoom handle), never folded into these bounds.
+      // src-zoom handle), never folded into these bounds. Rect branch (D2)
+      // returns the lens rect inline rather than calling magnifier.ts's
+      // `magnifierLensRect` — existing pattern: `magnifier.ts` already
+      // imports `Bounds` from this module, so the reverse import would be a
+      // cycle; bounds.ts stays a magnifier.ts-free leaf.
+      if (a.shape === "rect") {
+        return { x: a.at.x - a.width / 2, y: a.at.y - a.height / 2, w: a.width, h: a.height };
+      }
       return { x: a.at.x - a.radius, y: a.at.y - a.radius, w: 2 * a.radius, h: 2 * a.radius };
   }
 }

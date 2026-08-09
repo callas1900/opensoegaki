@@ -33,10 +33,13 @@ body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-ser
 #toolbar button[hidden] { display: none; }
 #toolbar button.active { background: var(--accent); }
 #toolbar button svg { display: block; }
-/* Badge tool button (src/ui/badgebar.ts): two stacked SVGs toggled via
-   `hidden` for the auto/fixed icon swap. `#toolbar button svg` above
-   outranks the UA [hidden] rule the same way button[hidden] does (see
-   comment above) — same explicit override needed here. */
+/* Two owners of this stacked-SVG icon-swap pattern (N5, Addendum D
+   2026-08-08): the badge tool button (src/ui/badgebar.ts, auto/fixed icon
+   swap) and the magnifier tool button (src/app.ts, circle/rect "cube mode"
+   icon swap, `data-magnifier-icon`) — both toggle `hidden` on a stacked pair
+   of SVGs. `#toolbar button svg` above outranks the UA [hidden] rule the
+   same way button[hidden] does (see comment above) — same explicit override
+   needed here, shared by both owners rather than duplicated per-button. */
 #toolbar button svg[hidden] { display: none; }
 /* No disabled-button style existed anywhere in the app before #new-doc
    (TASK-36); #capture's own disabled-during-capture state relied on this
