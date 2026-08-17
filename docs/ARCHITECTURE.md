@@ -1186,8 +1186,15 @@ Releases are tag-triggered: pushing a `vX.Y.Z` tag runs
 `.github/workflows/release.yml`, a matrix build over `windows-latest` and
 `macos-latest` (macOS targets `aarch64-apple-darwin` only) using
 `tauri-apps/tauri-action`, which builds and attaches bundles to a GitHub
-Release. The bundle `targets` config is `"all"`, letting Tauri resolve the
-right per-OS formats (NSIS/MSI on Windows, `.app`/`.dmg` on macOS). The
+Release. The bundle `targets` config is `["nsis", "app", "dmg"]`, which Tauri
+filters per OS: NSIS (`-setup.exe`) on Windows, `.app`/`.dmg` on macOS. MSI is
+deliberately excluded — the WiX shortcut it generates overrides the icon to
+`%SystemRoot%\Installer\{ProductCode}\ProductIcon`, a per-ProductCode cache
+path that changes on every version, so a taskbar pin made from that shortcut
+goes blank after an upgrade (and the icon is not cached at all, because the
+WiX `Icon` row is named `ProductIcon` without the `.ico` extension Windows
+Installer requires). NSIS shortcuts point straight at the installed exe, whose
+embedded icon resource always resolves. The
 bundle version is single-sourced to `src-tauri/Cargo.toml`
 (`tauri.conf.json` has no `version` field and falls back to it); a
 `verify-version` job guards the release by failing it if the tag,

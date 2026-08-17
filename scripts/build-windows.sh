@@ -4,9 +4,14 @@
 # (rustup MSVC + VS Build Tools + pnpm) does the work.
 set -euo pipefail
 
-powershell.exe -NoProfile -Command '
-  $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-  Set-Location C:\Users\calla\Documents\opensoegaki
+# Derive the Windows-side path of this checkout instead of hardcoding it, so a
+# renamed or relocated clone keeps working.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WIN_REPO_ROOT="$(wslpath -w "$REPO_ROOT")"
+
+powershell.exe -NoProfile -Command "
+  \$env:PATH = \"\$env:USERPROFILE\\.cargo\\bin;\$env:PATH\"
+  Set-Location '$WIN_REPO_ROOT'
   pnpm tauri build
-  exit $LASTEXITCODE
-'
+  exit \$LASTEXITCODE
+"

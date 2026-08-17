@@ -4,7 +4,7 @@ title: 'Release pipeline: matrix build (Windows + macOS) in CI'
 status: Done
 assignee: []
 created_date: '2026-07-12 02:45'
-updated_date: '2026-07-18 01:38'
+updated_date: '2026-08-17 00:12'
 labels:
   - platform
 dependencies: []
@@ -45,4 +45,6 @@ Remaining for Done: push a v0.1.0 tag, confirm both runners produce artifacts (A
 2026-07-18: Re-run of the Release workflow succeeded end-to-end: published release 'OpenSoegaki v0.1.0' with all four assets (x64-setup.exe 2.0MB, x64 en-US.msi 3.1MB, aarch64.dmg 2.7MB, aarch64.app.tar.gz 2.6MB). Note: the first successful run's published release had been deleted during draft cleanup (drafts and the published release share the same name — delete only entries labeled Draft). ACs 1/2/4/5/6 verified by the real workflow run; AC 3 (install+launch on Windows 11) still pending.
 
 AC #3 verified by the user on Windows 11 (2026-07-18): downloaded OpenSoegaki_0.1.0_x64-setup.exe from the published v0.1.0 release, SmartScreen warning appeared as documented (More info -> Run anyway), installed and launched successfully, app usable. All 6 ACs now verified; task Done.
+
+2026-08-17 (TASK-51): bundle.targets changed from "all" to ["nsis", "app", "dmg"] — the Windows MSI is no longer built. AC #1 ("installable NSIS/MSI bundle") remains satisfied by the NSIS -setup.exe; this is a recorded refinement of the release output, not a broken AC. Reason: the MSI Start Menu shortcut pointed its icon at %SystemRoot%\Installer\{ProductCode}\ProductIcon, which is never created (WiX Icon row lacks the required .ico extension) and changes every version, so taskbar pins rendered blank.
 <!-- SECTION:NOTES:END -->

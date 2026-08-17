@@ -51,6 +51,19 @@ Bundles are currently **unsigned**:
 
   Note: the macOS build currently targets Apple Silicon (aarch64) only.
 
+### Upgrading from a `.msi` install (Windows)
+
+Releases up to v0.2.1 also shipped a `.msi`; from the next release Windows ships
+only the NSIS `-setup.exe`. The MSI installer registered its Start Menu shortcut
+with an icon path inside the Windows Installer cache, which disappears on every
+version change — that is what made a pinned taskbar entry show a blank icon.
+
+If you installed from a `.msi`:
+
+1. Unpin OpenSoegaki from the taskbar.
+2. Uninstall it from Settings → Apps → Installed apps.
+3. Install the `-setup.exe`, then pin it again.
+
 ## Web version (iPhone)
 
 An installable, iPhone-focused web build is available at

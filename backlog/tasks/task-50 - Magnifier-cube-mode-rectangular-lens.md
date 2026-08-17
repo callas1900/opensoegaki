@@ -1,10 +1,10 @@
 ---
 id: TASK-50
 title: Magnifier cube mode (rectangular lens)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-08-08 03:27'
-updated_date: '2026-08-09 13:15'
+updated_date: '2026-08-17 16:57'
 labels: []
 dependencies: []
 ordinal: 67000
@@ -18,13 +18,13 @@ Add a rectangular, freely-resizable lens variant to the magnifier tool, for magn
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Second-tap on the active magnifier toolbar button toggles circle/rect mode and swaps the button icon (both desktop index.html and pwa/index.html)
-- [ ] #2 In rect mode, slide-to-aim creates a wide rectangular lens with a rectangular source marker and corner-to-corner connector lines, magnifying the source region uniformly on both axes
-- [ ] #3 The rect magnifier's SOURCE rect resizes via 8 box handles, drawn on a ring outset from the source frame, with free aspect (Shift on a corner locks the pre-drag aspect). During the drag zoom and the lens centre `at` are constant and the lens follows exactly as source x zoom; both axes stay within the lens size limits. The LENS has no box handles and is not directly resizable; it remains draggable by its body.
-- [ ] #4 The zoom grip sits on the LENS rect's SE corner and adjusts zoom with the SOURCE rect held fixed (the lens follows as source x zoom), clamped so zoom stays in [MIN, MAX] and the lens stays within [2*minLens, 2*MAGNIFIER_MAX_LENS_FRACTION*canvas] per axis; grabbing it without moving changes nothing. The source's legibility floor is enforced by the source box handles, and the source's drag target stays independently floored at a fingertip size -- a press at least as near the source centre as to any handle always starts a source-body drag.
-- [ ] #5 Lens-body drag moves the lens only; source-body drag moves the source only; undo restores prior state
-- [ ] #6 Existing circular magnifier behavior is unchanged (magnifier.spec.ts passes untouched)
-- [ ] #7 Export rasterizes the rect magnifier identically to on-canvas rendering
+- [x] #1 Second-tap on the active magnifier toolbar button toggles circle/rect mode and swaps the button icon (both desktop index.html and pwa/index.html)
+- [x] #2 In rect mode, slide-to-aim creates a wide rectangular lens with a rectangular source marker and corner-to-corner connector lines, magnifying the source region uniformly on both axes
+- [x] #3 The rect magnifier's SOURCE rect resizes via 8 box handles, drawn on a ring outset from the source frame, with free aspect (Shift on a corner locks the pre-drag aspect). During the drag zoom and the lens centre `at` are constant and the lens follows exactly as source x zoom; both axes stay within the lens size limits. The LENS has no box handles and is not directly resizable; it remains draggable by its body.
+- [x] #4 The zoom grip sits on the LENS rect's SE corner and adjusts zoom with the SOURCE rect held fixed (the lens follows as source x zoom), clamped so zoom stays in [MIN, MAX] and the lens stays within [2*minLens, 2*MAGNIFIER_MAX_LENS_FRACTION*canvas] per axis; grabbing it without moving changes nothing. The source's legibility floor is enforced by the source box handles, and the source's drag target stays independently floored at a fingertip size -- a press at least as near the source centre as to any handle always starts a source-body drag.
+- [x] #5 Lens-body drag moves the lens only; source-body drag moves the source only; undo restores prior state
+- [x] #6 Existing circular magnifier behavior is unchanged (magnifier.spec.ts passes untouched)
+- [x] #7 Export rasterizes the rect magnifier identically to on-canvas rendering
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -46,4 +46,6 @@ Addendum I (2026-08-09, user decision after live use of the cube-mode magnifier 
 Addendum I device-checklist additions (append to the 'Remaining gate before Done' Windows device pass above): (a) floor-size source on a phone screenshot -- the source's marker frame stays visible between the 8 ring handles, not swallowed by them; (b) the source is still finger-draggable from its centre at that floor size (magnifierSourceBodyWins's fall-through); (c) grabbing any of the 8 source handles produces no visible grab-jump (the outset deflation is exact); (d) the lens grip changes zoom without moving the source, and the zoom readout tracks live; (e) undo granularity is one step per gesture (a full box-handle or grip drag), not one step per pointermove frame.
 
 Reviewer round 2 (2026-08-09) amendment to device-checklist item (b) above: must be run at the FLOOR source size specifically, on a TOUCH device (not just any size/pointer). The body core there is a disc of radius ~9 CSS px (~18x18 CSS px across) around the source centre -- confirmed numerically (see resize.test.ts's magnifierSourceBodyWins property-1 test). If that proves too small to reliably grab with a real fingertip, do NOT patch this locally (e.g. do not just bump MAGNIFIER_SRC_HANDLE_OUTSET_PX or BASE_TOL_PX in canvas.ts) -- route back to the architect. Candidate lever already recorded for that discussion: touch-multiply the HIT ring's outset only (i.e. widen the box handles' grab region on touch beyond MAGNIFIER_SRC_HANDLE_OUTSET_PX = 14), while keeping the DRAWN ring at 14 unconditionally -- mirrors the existing drawn-vs-grab-size split HANDLE_DRAW_PX/HANDLE_HIT_PX already uses elsewhere in canvas.ts.
+
+2026-08-17: user ran the Windows device pass (pnpm tauri dev) covering the Addendum I checklist and checked AC #1-#7; task moved to Done. The 'Remaining gate before Done' block above is historical.
 <!-- SECTION:NOTES:END -->
