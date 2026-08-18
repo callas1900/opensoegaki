@@ -1,4 +1,22 @@
 # OpenSoegaki
+## Download & install
+
+Grab the latest bundle from [GitHub Releases](https://github.com/callas1900/opensoegaki/releases).
+
+Bundles are currently **unsigned**:
+
+- **Windows:** SmartScreen will warn about an unrecognized publisher. Click
+  "More info" → "Run anyway" to proceed.
+- **macOS:** 🚧 Gatekeeper reports the app as *"damaged and can't be opened"*
+  (right-click → Open does **not** bypass this dialog). Clear the quarantine flag
+  once from a terminal, then launch normally:
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/OpenSoegaki.app
+  ```
+
+  Note: the macOS build currently targets Apple Silicon (aarch64) only.
+
+## Description
 
 **Capture. Annotate. Share.** — A fast, lightweight, open-source screenshot annotation tool.
 
@@ -10,6 +28,7 @@ to any other app with a single drag — all in seconds.
 ![Annotating a screenshot in OpenSoegaki](docs/assets/hero.png)
 
 > **Status:** 🚧 Early development. Windows 11 first; macOS support is planned.
+
 
 ## Features
 
@@ -32,24 +51,6 @@ to any other app with a single drag — all in seconds.
 - **Share** — drag the tab at the bottom of the window straight into Slack, a browser,
   an email draft, or any drop target; `Ctrl+C` copies the PNG to the clipboard, or
   `Ctrl+S` saves it to disk
-
-## Download & install
-
-Grab the latest bundle from [GitHub Releases](https://github.com/callas1900/opensoegaki/releases).
-
-Bundles are currently **unsigned**:
-
-- **Windows:** SmartScreen will warn about an unrecognized publisher. Click
-  "More info" → "Run anyway" to proceed.
-- **macOS:** Gatekeeper reports the app as *"damaged and can't be opened"*
-  (right-click → Open does **not** bypass this dialog). Clear the quarantine flag
-  once from a terminal, then launch normally:
-
-  ```sh
-  xattr -dr com.apple.quarantine /Applications/OpenSoegaki.app
-  ```
-
-  Note: the macOS build currently targets Apple Silicon (aarch64) only.
 
 ### Upgrading from a `.msi` install (Windows)
 
