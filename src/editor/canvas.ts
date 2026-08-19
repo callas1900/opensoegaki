@@ -25,7 +25,26 @@ import { History, type DocSnapshot } from "./history";
 import { type Bounds, boundsOf, fontString } from "./bounds";
 import { hitTest, magnifierHitPart } from "./hittest";
 import { decodeClampedBitmap } from "./downscale";
-import { computeCrop, fullImageRect, handleAt, applyHandleDrag, MIN_CROP_PX, type CropRect, type CropHandle } from "./crop";
+import {
+  computeCrop,
+  fullImageRect,
+  handleAt,
+  applyHandleDrag,
+  cropFrameSize,
+  cropFrameFor,
+  normalizeRect,
+  denormalizeRect,
+  rotateNormRect,
+  frameToRotatedSource,
+  tiltFromDrag,
+  FULL_NORM,
+  MIN_CROP_PX,
+  TILT_DEADBAND_RAD,
+  type CropRect,
+  type CropHandle,
+  type CropFrame,
+  type NormRect,
+} from "./crop";
 import {
   deriveLensSizeForSource,
   deriveRectLensSize,
@@ -57,9 +76,12 @@ import {
   angleOf,
   applyRotation,
   canRotate,
+  documentRotation,
+  normalizeAngle,
   pivotOf,
   pivotOfAnnotation,
   reanchorDelta,
+  rotateAnnotationForDocument,
   rotatePoint,
   rotatedCorners,
   rotationFromDrag,
@@ -143,8 +165,61 @@ const MAGNIFIER_SOURCE_MIN_HIT_HALF_PX = 11;
  * below, the one owner of the `* cropScale()` multiplication.
  */
 const MAGNIFIER_SRC_HANDLE_OUTSET_PX = 14;
-/** Gap kept between the crop corner handle and the floating ✓/✗ controls, in CSS px. */
-const HANDLE_MARGIN_PX = HANDLE_DRAW_PX / 2 + 8;
+/**
+ * TASK-52 (design note docs/design/2026-08-19-crop-canvas-rotation.md, D0/D1):
+ * the rotate band's nominal thickness, measured in CSS px against the canvas
+ * as it is BEFORE the frame grows (see `freezeBand`'s doc comment for why the
+ * measurement must be taken pre-growth). On-screen it renders thinner right
+ * after growth (down to ~32.7 CSS px on a 390px iPhone viewport at a normal
+ * entry, for a roughly-square fixture).
+ *
+ * N1 (reviewer, non-blocking round): D1's original "converges back up to
+ * exactly 40 CSS px after the first quarter turn ... never ratchets" claim
+ * is FALSE for extreme aspect ratios and was never true in general — it only
+ * held for the near-square fixtures it was originally checked against. On a
+ * very tall or very wide document the effective on-screen band, per turn,
+ * moves with the frame's actual on-screen scale at that quarter (which
+ * itself depends on which axis of the frame is stage-constrained), not with
+ * a single contraction factor toward 40 — measured on the TALL 120x900
+ * fixture on the 390x844 iPhone viewport it went 35 CSS px at entry to
+ * 21.7 CSS px after one clockwise turn and back up to ~66 CSS px after a
+ * second, i.e. it oscillates rather than converging, and 21.7 CSS px sits
+ * below the 44pt HIG touch guidance the rest of this file otherwise honours
+ * for isolated controls (the band is a continuous strip, not an isolated
+ * control — see D1's own "why 40 and not 44" rationale — so this is a real
+ * but not a HIG-violating minimum). This is a property of the geometry
+ * (`cropFrameSize`'s per-axis `cap`/aspect-ratio interaction with the
+ * stage's own aspect ratio), not a bug in any one measurement path — the
+ * `freezeBand()` staleness bug documented on that method (N1) was a
+ * SEPARATE, now-fixed defect that could push the band far outside even this
+ * oscillating range (e.g. ~70.5 CSS px with a stubbed keyboard up).
+ */
+const ROTATE_BAND_CSS_PX = 40;
+/**
+ * TASK-52 D1 layer 1: opaque fill for the whole crop frame, painted before
+ * the preview transform, so the band and any tilt-opened triangular gaps
+ * read as one flat non-photographic surface rather than a hole. Slightly
+ * lighter than the app's own `--bg` (#1e1f22) so the frame reads as a
+ * surface, not emptiness; `drawCropOverlay`'s existing 45% black dim then
+ * lands on top of it (unchanged), resolving the band to ~#171a1c.
+ */
+const CROP_VOID_FILL = "#2a2d31";
+/**
+ * TASK-52 reviewer B2.2: the tilt gesture is armed only once the pointer has
+ * moved this far (CSS px, scale-compensated to bitmap px at the call site,
+ * same pattern as `DOUBLE_TAP_SLOP_PX`) from its `onDown` start position. A
+ * press-and-release on the rotate band with no perceptible drag must never
+ * write `crop.tilt` at all — before this slop existed, `tiltFromDrag` could
+ * leave a residual on the order of 1e-7 rad from pointer jitter alone, which
+ * (before `TILT_DEADBAND_RAD`'s arithmetic-only fix) was large enough to trip
+ * `applyCrop`'s rotated-vs-pure-crop split. The deadband alone was not
+ * sufficient: a 1 CSS px jiggle at a realistic pivot radius is well above
+ * `TILT_DEADBAND_RAD` (~0.1°), so a tap could still take the full resample
+ * path while the readout kept showing 0°. Arming at the gesture's origin
+ * fixes the actual cause — a tap never becomes a rotation in the first
+ * place — rather than papering over its symptom at apply time.
+ */
+const TILT_SLOP_PX = 4;
 /** Minimum distance (in bitmap px) between consecutive freehand highlighter points, to keep the point list light. */
 const HIGHLIGHTER_MIN_POINT_DIST_PX = 2;
 /**
@@ -226,6 +301,9 @@ export class Editor {
   // a crop only trims the already-loaded image, it doesn't change what
   // "large" means). Multiplies stroke/radius/font at the three annotation
   // creation sites below; always 1 when annotationScaleBaseline is null.
+  // TASK-52: rotation doesn't recompute it either, for the same reason (D4)
+  // — the long side is invariant under a quarter turn and can only shrink
+  // under a tilt + inscribed crop.
   private docScale = 1;
   tool: Tool = "arrow";
   // Notified at the end of every setTool() call (TASK-40), including calls
@@ -293,15 +371,37 @@ export class Editor {
     | { shape: "circle"; offset: Point; radius: number; zoom: number }
     | { shape: "rect"; offset: Point; half: Point }
     | null = null;
-  // Crop tool state: the current region (starts as the full image), the
-  // corner handle actively being dragged (if any), and the owned floating
-  // ✓/✗ controls overlay + its resize-reposition handler. Never part of doc,
-  // history, or renderAnnotations.
+  // Crop tool state (TASK-52, design note docs/design/2026-08-19-crop-canvas-rotation.md,
+  // D0): while crop mode is active the live canvas is a temporarily enlarged
+  // "frame space" — the region is stored normalized against the frame's
+  // inscribed (rotation-safe) bounds, not as a pixel rect, so tilting out
+  // and back never drifts the region (see crop.ts's `NormRect` doc comment).
+  // Never part of doc, history, or renderAnnotations.
   private crop: {
-    rect: CropRect;
+    /** Region as a ratio of the inscribed bounds — source of truth (D3). */
+    norm: NormRect;
+    /** Clockwise quarter turns applied to the preview. */
+    quarter: 0 | 1 | 2 | 3;
+    /** Free rotation, radians, clamped to +/-MAX_TILT_RAD (crop.ts). */
+    tilt: number;
+    /** Frozen rotate-band thickness, FRAME px — see `freezeBand`. */
+    band: number;
+    /** True once a corner handle has ever been dragged (D3's re-assert rule). */
+    touched: boolean;
+    /** Active corner drag, if any. */
     drag: CropHandle | null;
+    // Active free-rotation ("tilt") drag, if any (D4). TASK-47: when
+    // pointercancel hygiene lands, its reset routine must clear this
+    // alongside crop.drag, rotateDrag, resize, move, magnifierPlace and
+    // draft — a cancelled tilt drag left armed would keep rotating the
+    // preview on the next unrelated pointermove. `armed` (reviewer B2.2)
+    // starts false at `onDown` and flips to true only once the pointer has
+    // moved past `TILT_SLOP_PX` from `startPointer` — until then `onMove`
+    // never writes `tilt`, so a tap-and-release never counts as a rotation.
+    rotate: { startPointer: Point; startTilt: number; pivot: Point; armed: boolean } | null;
     controls: HTMLDivElement;
-    reposition: () => void;
+    /** Live angle label inside `controls` (D2). */
+    readout: HTMLSpanElement;
   } | null = null;
   private readonly ctx: CanvasRenderingContext2D;
   // Transient DOM overlay for the text tool; never part of doc, history, or renderAnnotations.
@@ -567,6 +667,21 @@ export class Editor {
   render(): void {
     const { ctx, canvas } = this;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // TASK-52 (D0): while crop mode is active the live canvas is a "frame
+    // space" preview — fill the whole frame with an opaque void color first
+    // (the band and any tilt-opened triangular gaps are not photographic
+    // content, D1 layer 1), then draw the background/annotations/draft
+    // through the frame's rotate+scale preview transform. `cropFrame()` is
+    // the single source of that geometry — drawCropOverlay() and
+    // applyCrop() read the exact same thing, so the three call sites can
+    // never disagree about where the image or the crop region are.
+    const frame = this.crop ? this.cropFrame() : null;
+    if (frame) {
+      ctx.fillStyle = CROP_VOID_FILL;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      this.applyPreviewTransform(ctx, frame);
+    }
     if (this.doc.imageBitmap) ctx.drawImage(this.doc.imageBitmap, 0, 0);
     // While re-editing an existing text annotation, skip drawing it here —
     // the DOM input overlay is its live stand-in (see `textEdit` doc comment).
@@ -574,12 +689,16 @@ export class Editor {
     const list = editId ? this.doc.annotations.filter((a) => a.id !== editId) : this.doc.annotations;
     renderAnnotations(ctx, list, this.doc.images, this.doc.imageBitmap);
     if (this.draft) renderAnnotations(ctx, [this.draft], this.doc.images, this.doc.imageBitmap);
+    if (frame) ctx.restore();
     // Selection chrome is drawn last, directly on the live canvas context only —
     // never through renderAnnotations, so it can never reach exportPng().
+    // (Deliberately OUTSIDE the preview transform above: selectedId is
+    // always null while crop mode is active, so this is moot in practice,
+    // but it stays in frame space like drawCropOverlay below.)
     const selected = this.selectedAnnotation();
     if (selected) this.drawSelectionOverlay(selected);
     else this.teardownSelectionControls();
-    this.drawCropOverlay();
+    if (frame) this.drawCropOverlay(frame);
   }
 
   hasImage(): boolean {
@@ -683,61 +802,487 @@ export class Editor {
   }
 
   /**
-   * Initialize crop state: the region starts as the full loaded image with
-   * corner handles, plus a floating ✓/✗ controls overlay (owned like
-   * `textEdit.input`). No-op if there is no image or crop is already active.
+   * TASK-52 D0: the frame is larger than the document even at `quarter ===
+   * 0` (the band grows outward on every side), so the frame's on-screen CSS
+   * thickness has to be measured against the canvas as it is BEFORE this
+   * call resizes it. Recomputing the band on every render instead of
+   * freezing it once per frame-size change (`initCrop`, `setQuarter`) would
+   * close a feedback loop: band -> frame size -> display scale ->
+   * (whatever measures the display scale) -> band.
+   *
+   * N1 (reviewer, non-blocking round after the browser-verified APPROVE):
+   * this method's PRIMARY source used to be `cropScale()`, which divides by
+   * `canvas.getBoundingClientRect().width` — the canvas's *inline* CSS box,
+   * written only when `fitCanvasToStage()` actually runs. That write is
+   * synchronous at this class's own explicit call sites (`initCrop`,
+   * `setQuarter`, …) but ASYNCHRONOUS everywhere else: `#stage` can resize
+   * for a reason outside this class's control — the badge bar opening, or
+   * `applyKeyboardInset` shrinking the stage for an open soft keyboard —
+   * and in both cases the resulting canvas refit runs inside
+   * `stageResizeObserver`'s callback, which `ResizeObserver` schedules
+   * asynchronously (a queued microtask-adjacent callback, not synchronous
+   * with the layout change). So there is a real window — entering crop
+   * mode right after either of those triggers, before the observer
+   * callback has fired — where `canvas.getBoundingClientRect()` still
+   * reflects the STALE, pre-shrink box while `#stage` itself has already
+   * resized. Measured on the 390x844 iPhone viewport with the TALL
+   * 120x900 fixture, that staleness poisoned the band by up to 2x (a
+   * ~35 CSS px band at a normal entry became ~70.5 CSS px with a stubbed
+   * keyboard up), and because `setQuarter` re-freezes from the SAME
+   * (by-then-correct) box on every subsequent quarter turn, the visible
+   * band would lurch back toward the true value on the first turn after
+   * entry — an apparent "ratchet" that was really just the stale read
+   * finally being replaced by a fresh one.
+   *
+   * Fix: read `#stage`'s own client box FIRST. `clientWidth`/
+   * `getComputedStyle` force a synchronous layout recalculation reflecting
+   * the CURRENT DOM the instant they're read — independent of
+   * `stageResizeObserver`'s own (separate, async) timing — so this is
+   * immune to the staleness above by construction, not by luck of when it
+   * happens to run relative to the observer. This mirrors
+   * `fitCanvasToStage()`'s own scale computation (shrink-to-fit, never
+   * upscale) so the frozen band matches what the canvas's own refit is
+   * about to produce.
+   *
+   * `cropScale()` is kept as a SECOND fallback, not deleted: if `#stage`
+   * itself is unusable (detached canvas — should not happen while crop is
+   * active, but this method has no way to assert it isn't) it is still a
+   * legitimate secondary source. It is never preferred over the stage
+   * read, though, because it can only ever be as fresh as the stage read
+   * and is sometimes staler (see above).
+   *
+   * B1 (reviewer, pre-existing): two paths can reach here while the
+   * canvas's own on-screen box is still zero-width — `app.ts`'s
+   * `syncEmptyState()` un-hides `#canvas` (`#stage.empty #canvas {
+   * display: none }`) AFTER the editor re-arms crop on a fresh
+   * `setBackground`/`restore`, and `getBoundingClientRect()` on a
+   * `display:none` element is all-zero. The stage element is never
+   * `display: none` while crop mode is (re-)activating, only the canvas
+   * is, so the primary stage-derived read stays trustworthy exactly when
+   * `cropScale()` alone would not have been. Only if the stage box is ALSO
+   * unusable does this fall through to the flat `ROTATE_BAND_CSS_PX`
+   * constant as a last resort.
+   */
+  private freezeBand(): number {
+    const stage = this.canvas.parentElement;
+    if (stage) {
+      const cs = getComputedStyle(stage);
+      const cw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const ch = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      // Mirrors fitCanvasToStage()'s own scale computation (shrink-to-fit,
+      // never upscale) so the frozen band matches what the band will
+      // actually measure once fitCanvasToStage() runs.
+      const fitScale = Math.min(1, cw / this.canvas.width, ch / this.canvas.height);
+      if (Number.isFinite(fitScale) && fitScale > 0) return ROTATE_BAND_CSS_PX / fitScale;
+    }
+    const scale = this.cropScale();
+    if (Number.isFinite(scale) && scale > 0) return ROTATE_BAND_CSS_PX * scale;
+    return ROTATE_BAND_CSS_PX;
+  }
+
+  /**
+   * Total crop-preview rotation (D0): `quarter * 90° + tilt`, normalized. 0
+   * with no active crop.
+   *
+   * F8 (design-note addendum, 2026-08-19): the result is passed through
+   * `TILT_DEADBAND_RAD` — a magnitude under the deadband is snapped to
+   * exactly 0 — because this is the accessor `applyCrop()`'s `angle === 0`
+   * no-op test and `updateCropReadout()` both read. The live preview
+   * transform does NOT go through this method: `cropFrame()` below computes
+   * `quarter * (Math.PI / 2) + tilt` directly from the raw, un-deadbanded
+   * `tilt`, so what's drawn on screen always matches the pointer exactly.
+   */
+  private cropAngle(): number {
+    if (!this.crop) return 0;
+    const total = normalizeAngle(this.crop.quarter * (Math.PI / 2) + this.crop.tilt);
+    return Math.abs(total) < TILT_DEADBAND_RAD ? 0 : total;
+  }
+
+  /**
+   * `cropFrame()` and `effectiveFrame()` (below) are a deliberate PAIR, and
+   * this comment covers both: the live canvas has two different notions of
+   * "the current angle", and each accessor commits to exactly one so no
+   * caller can accidentally cross-wire them.
+   *
+   * - `cropFrame()` reads the RAW, un-deadbanded `crop.tilt` — the angle the
+   *   pointer is actually at right now. `render()`/`drawCropOverlay()` and
+   *   the gesture handlers (hit-testing, hover cursor) use this one, so the
+   *   on-screen preview always tracks the pointer exactly, with no
+   *   deadband-induced dead zone and no jump when a tilt drag arms.
+   * - `effectiveFrame()` reads `cropAngle()` — the deadbanded, "did the user
+   *   actually rotate anything" angle `applyCrop()`'s zero-test also reads.
+   *   This is `applyCrop()`'s ONLY entry point for building its frame (B2.1:
+   *   see the design note's addendum). Feeding `cropFrameFor` a residual
+   *   in-deadband tilt still shrinks `bounds` by `INSCRIBED_INSET_PX`, which
+   *   would push an apply the user experienced as untouched down the
+   *   rotated/history-pushing branch — building the frame from the SAME
+   *   angle the zero-test reads is what keeps the two from disagreeing.
+   *
+   * Both are the single call sites in this class that invoke `cropFrameFor`
+   * for their respective purpose — never recomputed ad hoc elsewhere.
+   * Assumes `this.crop` is set (every caller guards first).
+   *
+   * Reviewer (non-blocking): degrades to a zero-size image/frame instead of
+   * throwing if `this.crop` is set but `this.doc.imageBitmap` is somehow
+   * null — `crop` and the bitmap are supposed to be torn down/rebuilt
+   * together (`teardownCrop`/`initCrop`/`setBackground`/`restore`), so this
+   * should be unreachable, but `render()` calls this on every frame while
+   * crop mode is active and a bare `.width` on `null` would blank the whole
+   * canvas instead of just the crop chrome.
+   */
+  private cropFrame(): CropFrame {
+    const bitmap = this.doc.imageBitmap;
+    const { quarter, tilt, band } = this.crop!;
+    if (!bitmap) {
+      return {
+        w: this.canvas.width,
+        h: this.canvas.height,
+        band,
+        angle: 0,
+        s: 1,
+        image: { w: 0, h: 0 },
+        bbox: { w: 0, h: 0 },
+        bounds: { x: this.canvas.width / 2, y: this.canvas.height / 2, w: 0, h: 0 },
+      };
+    }
+    return cropFrameFor(
+      bitmap.width,
+      bitmap.height,
+      { w: this.canvas.width, h: this.canvas.height, band },
+      quarter * (Math.PI / 2) + tilt,
+    );
+  }
+
+  /**
+   * The APPLY-TIME frame — see `cropFrame()`'s doc comment above for the
+   * raw-tilt (preview) vs effective-angle (apply) split this accessor is
+   * one half of. `applyCrop()` uses this instead of an inline `cropFrameFor`
+   * call so the split has exactly one named entry point on each side.
+   * Assumes `this.crop` and `this.doc.imageBitmap` are both set (every
+   * caller — currently only `applyCrop()` — guards both first).
+   */
+  private effectiveFrame(): CropFrame {
+    const bitmap = this.doc.imageBitmap!;
+    return cropFrameFor(
+      bitmap.width,
+      bitmap.height,
+      { w: this.canvas.width, h: this.canvas.height, band: this.crop!.band },
+      this.cropAngle(),
+    );
+  }
+
+  /**
+   * The current crop region in frame px, derived from `norm` against
+   * `frame`'s inscribed bounds (D3) — never stored as pixels (see the
+   * `crop` state's `norm` field doc comment for why). Reuses an
+   * already-computed `frame` when the caller has one, to avoid recomputing
+   * `cropFrameFor` twice in the same render/gesture frame.
+   */
+  private cropRect(frame?: CropFrame): CropRect {
+    const f = frame ?? this.cropFrame();
+    return denormalizeRect(this.crop!.norm, f.bounds, MIN_CROP_PX);
+  }
+
+  /**
+   * Apply the crop preview's rotate+scale transform (D0) to `ctx`: the
+   * background image (and, inside the same `save/.../restore`, the
+   * annotations drawn on top of it) is rotated about the frame centre by
+   * `frame.angle` and uniformly scaled by `frame.s`, then centred back on
+   * the frame. Callers `save()` before and `restore()` after — this method
+   * only ever composes onto whatever transform is already active.
+   */
+  private applyPreviewTransform(ctx: CanvasRenderingContext2D, frame: CropFrame): void {
+    ctx.translate(frame.w / 2, frame.h / 2);
+    ctx.rotate(frame.angle);
+    ctx.scale(frame.s, frame.s);
+    ctx.translate(-frame.image.w / 2, -frame.image.h / 2);
+  }
+
+  /**
+   * True when `p` (frame px) is inside `rect` (frame px), inclusive of the
+   * boundary — shared by `onDown`'s tilt-vs-inert decision and the crop
+   * hover cursor (D4), so both agree on exactly what "outside the region"
+   * means.
+   */
+  private pointInRect(p: Point, rect: CropRect): boolean {
+    return p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
+  }
+
+  /**
+   * The image's own four corners in frame space — rotated by `frame.angle`
+   * about the frame centre and scaled by `frame.s`, exactly the transform
+   * `applyPreviewTransform` applies to the background draw. NOT the same as
+   * `frame.bbox`'s corners, which are the rotated image's axis-aligned
+   * BOUNDING box, not the tilted rectangle itself; used only by
+   * `drawCropOverlay`'s image-outline stroke (D1 layer 3).
+   */
+  private rotatedImageCorners(frame: CropFrame): [Point, Point, Point, Point] {
+    const { w: imgW, h: imgH } = frame.image;
+    const cos = Math.cos(frame.angle);
+    const sin = Math.sin(frame.angle);
+    const cx = frame.w / 2;
+    const cy = frame.h / 2;
+    const local: Point[] = [
+      { x: -imgW / 2, y: -imgH / 2 },
+      { x: imgW / 2, y: -imgH / 2 },
+      { x: imgW / 2, y: imgH / 2 },
+      { x: -imgW / 2, y: imgH / 2 },
+    ];
+    return local.map(({ x, y }) => {
+      const sx = x * frame.s;
+      const sy = y * frame.s;
+      return { x: cx + sx * cos - sy * sin, y: cy + sx * sin + sy * cos };
+    }) as [Point, Point, Point, Point];
+  }
+
+  /**
+   * Initialize crop state: a fresh frame at `quarter === 0`/`tilt === 0`
+   * with the region covering the whole inscribed rect, plus the two-row
+   * floating controls overlay (D2, owned like `textEdit.input`). No-op if
+   * there is no image or crop is already active.
+   *
+   * `commitTextEditor()` runs first so an in-flight text edit is settled
+   * into `doc.annotations` before the canvas resizes into frame space —
+   * mirrors the existing `onDown`/select-tool discipline of never letting a
+   * pending edit straddle a canvas geometry change.
    */
   private initCrop(): void {
     if (!this.hasImage() || this.crop) return;
+    this.commitTextEditor();
     const bitmap = this.doc.imageBitmap!;
 
     const controls = document.createElement("div");
     controls.className = "crop-controls";
-    const apply = document.createElement("button");
-    apply.type = "button";
-    apply.className = "crop-apply";
-    apply.title = "Apply crop (Enter)";
-    apply.textContent = "✓";
-    apply.addEventListener("click", (e) => {
+
+    const ccw = document.createElement("button");
+    ccw.type = "button";
+    ccw.className = "crop-rotate-ccw";
+    ccw.title = "Rotate left 90°";
+    ccw.setAttribute("aria-label", "Rotate left 90°");
+    // Feather-style "rotate-ccw" icon (same inline-SVG precedent as
+    // ensureSelectionControls' trash icon — emoji/text glyphs render nearly
+    // invisible on iOS).
+    ccw.innerHTML =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>';
+    ccw.addEventListener("click", (e) => {
       e.stopPropagation();
-      void this.applyCrop();
+      this.setQuarter(-1);
     });
+
+    const readout = document.createElement("span");
+    readout.className = "crop-angle";
+
+    const cw = document.createElement("button");
+    cw.type = "button";
+    cw.className = "crop-rotate-cw";
+    cw.title = "Rotate right 90°";
+    cw.setAttribute("aria-label", "Rotate right 90°");
+    cw.innerHTML =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+    cw.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.setQuarter(1);
+    });
+
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "crop-cancel";
     cancel.title = "Cancel crop (Esc)";
-    cancel.textContent = "✗";
+    cancel.setAttribute("aria-label", "Cancel crop (Esc)");
+    cancel.innerHTML =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     cancel.addEventListener("click", (e) => {
       e.stopPropagation();
       this.cancelCrop();
     });
-    controls.appendChild(apply);
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "crop-apply";
+    apply.title = "Apply crop (Enter)";
+    apply.setAttribute("aria-label", "Apply crop (Enter)");
+    apply.innerHTML =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<polyline points="20 6 9 17 4 12"/></svg>';
+    apply.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.applyCrop();
+    });
+
+    // Single row, left to right: ccw / angle readout / cw / cancel / apply
+    // (see the `.crop-controls` CSS comment for the width arithmetic).
+    controls.appendChild(ccw);
+    controls.appendChild(readout);
+    controls.appendChild(cw);
     controls.appendChild(cancel);
-    this.canvas.parentElement!.appendChild(controls);
+    controls.appendChild(apply);
 
-    const reposition = () => this.positionCropControls();
-    window.addEventListener("resize", reposition);
+    // TASK-52 regression fix (reviewer round, 2026-08-19): `.crop-controls`
+    // used to be `position: absolute`, docked at `#stage`'s own bottom-centre
+    // (the 2026-08-19 UI-1 addendum) -- an opaque overlay ON TOP OF `#stage`,
+    // not a part of its layout. Measured with `document.elementFromPoint` at
+    // the live crop corner-handle positions, that overlay sat directly on
+    // top of the two BOTTOM handles on several real geometries (a tall
+    // portrait fixture on both a 390x844 WebKit viewport and the desktop
+    // Chromium shell), and on top of the rotate buttons themselves on a
+    // small landscape fixture -- a press meant for the bottom-left handle
+    // never reached the canvas at all (TASK-4 AC#2 FAIL: the region could
+    // not be shrunk from the bottom), and a press meant for a handle
+    // silently rotated the document instead. TASK-38 already hit and solved
+    // this exact failure mode for `#badge-bar` ("the fixed overlay bar hides
+    // the bottom of the photo, making it impossible to stamp there"); this
+    // is the same fix (option A, the design note's addendum superseding
+    // UI-1): make the group an IN-FLOW flex child of `#app`, a sibling of
+    // `#stage` and `#share-bar`, not an overlay on top of `#stage`. `#stage`
+    // then shrinks via its own `flex: 1` to make room, so the corner handles
+    // always land on the canvas's own reduced, fully-visible footprint
+    // instead of underneath the bar. No JS repositioning is needed either
+    // way (the old absolute-positioned version already needed none) -- CSS
+    // derives both the bar's own layout and the stage's resulting shrink for
+    // free on every viewport change.
+    //
+    // `body.crop-bar-open` mirrors `body.badge-bar-open` (src/ui/badgebar.ts)
+    // exactly: styles.css uses it to hide `#share-bar` while crop is active
+    // (crop is modal, so losing Copy/Share for its duration is the same
+    // trade-off the badge bar already makes), and defensively cross-hides
+    // `#badge-bar`/`.crop-controls` against each other so the two
+    // mutually-exclusive bars can never both render -- see that rule block's
+    // own comment for the full invariant writeup.
+    // N3 (reviewer, non-blocking): the Editor previously needed only
+    // `canvas.parentElement` (the stage) to build its chrome -- this is the
+    // first place it reaches for `#app` specifically, a mount point both
+    // shipped shells (`index.html`, `pwa/index.html`) always provide but
+    // that nothing in this class's own contract guarantees. A non-null
+    // assertion here would turn "editor mounted somewhere unexpected" into
+    // a hard throw out of `initCrop()`, leaving `this.crop` unset while the
+    // controls DOM (if any got appended before the throw) and
+    // `crop-bar-open` class are left inconsistent. Falling back to the
+    // stage keeps the bar buildable (crop still functions, just without the
+    // in-flow bottom-bar layout `#app`'s flex children give it) instead of
+    // crashing outright.
+    const app = document.querySelector<HTMLElement>("#app") ?? this.canvas.parentElement;
+    if (!app) return; // No mount point at all -- bail out of building the bar rather than crash.
+    app.appendChild(controls);
+    document.body.classList.add("crop-bar-open");
 
-    this.crop = { rect: fullImageRect(bitmap.width, bitmap.height), drag: null, controls, reposition };
+    // Band frozen BEFORE the resize (freezeBand's doc comment); frame size
+    // computed for quarter 0 (D0). Ordering hazard (reviewer): `freezeBand()`
+    // falls back to reading `#stage`'s own client box when the canvas is
+    // still `display: none` (B1, below) -- that read only sees the stage
+    // already shrunk by the bar just inserted above because
+    // `getBoundingClientRect()`/`clientWidth` force a synchronous layout
+    // recalculation reflecting the CURRENT DOM, not because of the
+    // (separate, async) `stageResizeObserver`. The bar must stay inserted
+    // (and `crop-bar-open` applied) strictly before this call for that to
+    // hold -- verified by the ordering of this function's statements.
+    const band = this.freezeBand();
+    const frameSize = cropFrameSize(bitmap.width, bitmap.height, 0, band, this.maxImportDimension);
+    this.canvas.width = frameSize.w;
+    this.canvas.height = frameSize.h;
+    this.fitCanvasToStage();
+
+    this.crop = {
+      norm: { ...FULL_NORM },
+      quarter: 0,
+      tilt: 0,
+      band,
+      touched: false,
+      drag: null,
+      rotate: null,
+      controls,
+      readout,
+    };
     this.render();
   }
 
-  /** Tear down crop state and its DOM overlay. Does not render (callers render). */
+  /**
+   * Apply a quarter turn to the crop preview (D0/D3): transpose the
+   * normalized region across the turn (or re-assert `FULL_NORM` if the
+   * region has never been touched), re-freeze the band against the
+   * pre-resize canvas, resize the canvas to the new frame size, refit the
+   * on-screen box, and re-render. Canvas resizes only ever happen on this
+   * kind of discrete event — never mid-drag (D0). No-op without an image or
+   * an active crop, and also a no-op while a corner or tilt drag is in
+   * flight (reviewer, non-blocking): D0 forbids a mid-drag canvas resize
+   * because it would stale the drag's pivot/start-point and make the
+   * geometry jump — a second finger tapping a rotate button while the first
+   * is mid-drag is exactly that scenario (the rotate buttons are DOM
+   * elements, so they are reachable by a second pointer even while the
+   * canvas has pointer capture from the first).
+   */
+  private setQuarter(delta: -1 | 1): void {
+    if (!this.crop || !this.hasImage()) return;
+    if (this.crop.drag || this.crop.rotate) return;
+    const bitmap = this.doc.imageBitmap!;
+    const crop = this.crop;
+    crop.norm = crop.touched ? rotateNormRect(crop.norm, delta) : { ...FULL_NORM };
+    crop.quarter = ((((crop.quarter + delta) % 4) + 4) % 4) as 0 | 1 | 2 | 3;
+    crop.band = this.freezeBand();
+    const frameSize = cropFrameSize(bitmap.width, bitmap.height, crop.quarter, crop.band, this.maxImportDimension);
+    this.canvas.width = frameSize.w;
+    this.canvas.height = frameSize.h;
+    this.fitCanvasToStage();
+    this.render();
+  }
+
+  /** Tear down crop state and its DOM bar. Does not render (callers render). */
   private teardownCrop(): void {
     if (!this.crop) return;
     this.crop.controls.remove();
-    window.removeEventListener("resize", this.crop.reposition);
+    // Restores #share-bar and lets #stage grow back, mirroring
+    // src/ui/badgebar.ts's close() -- see initCrop()'s doc comment for the
+    // full in-flow-bar writeup. Removed unconditionally (before the
+    // canvas-dimension restore below) whether or not that restore branch
+    // actually runs, so the bar/class and the crop state stay consistent
+    // even on an already-original-size canvas (e.g. cancelling an untouched
+    // crop before any quarter turn).
+    document.body.classList.remove("crop-bar-open");
     this.crop = null;
+    // TASK-52 B1 (D4): the frame is larger than the document even at
+    // `quarter === 0` (the band grows outward on every side), so leaving
+    // crop mode without shrinking the canvas back would paint an
+    // original-size bitmap onto an oversized canvas. `teardownCrop` is the
+    // SINGLE owner of restoring the canvas's dimensions on the way out of
+    // crop mode — verified against all four call sites (setBackground,
+    // restore, applyCrop, clearDocument) in the design note; no other code
+    // path may write canvas dimensions on the way out of crop mode.
+    const bmp = this.doc.imageBitmap;
+    if (bmp && (this.canvas.width !== bmp.width || this.canvas.height !== bmp.height)) {
+      this.canvas.width = bmp.width;
+      this.canvas.height = bmp.height;
+    }
+    // N2 (reviewer, non-blocking): `fitCanvasToStage()` used to run only
+    // inside the branch above, so on the `applyCrop()` exit path (where
+    // `applyCrop` already set `canvas.width/height` to the output size
+    // before calling `setTool("select")` -> here) this method never called
+    // it itself -- the final on-screen refit was left entirely to the
+    // asynchronous `stageResizeObserver` callback that a canvas-size change
+    // eventually triggers. Harmless in practice today, since the observer
+    // does fire, but it also silently skipped the cap-clamped edge case
+    // where the branch's dimension check can be FALSE even though the
+    // canvas's on-screen CSS box still needs refitting for the new frame
+    // it's leaving (e.g. a square image already at `maxImportDimension`,
+    // where the frame and the bitmap can land on the same width/height by
+    // coincidence, so the "dimensions differ" guard above never fires at
+    // all). Calling `fitCanvasToStage()` unconditionally here, right after
+    // the `crop-bar-open` class removal, makes the exit-time refit
+    // synchronous and independent of ResizeObserver's own timing in every
+    // case, not just the common one — `fitCanvasToStage()` is already a
+    // cheap no-op read-then-maybe-write when the box is already correct.
+    this.fitCanvasToStage();
   }
 
   /**
    * Discard the pending crop region and exit crop mode to the select tool
    * (TASK-40; amends TASK-4 AC#5, which kept crop mode active on cancel).
-   * The document is never touched — only the in-flight region is dropped.
-   * Routed entirely through `setTool("select")`, which tears crop down,
-   * clears selection and renders. Re-cropping means re-activating the crop
-   * tool, which re-initializes a fresh full-image region. Returns false if
-   * there was no active crop.
+   * The document is never touched — only the in-flight region, rotation and
+   * frame are dropped. Routed entirely through `setTool("select")`, which
+   * tears crop down (restoring the canvas's dimensions via `teardownCrop`'s
+   * B1, D4), clears selection and renders. Re-cropping means re-activating
+   * the crop tool, which re-initializes a fresh full-image region. Returns
+   * false if there was no active crop.
    */
   cancelCrop(): boolean {
     if (!this.crop) return false;
@@ -746,42 +1291,146 @@ export class Editor {
   }
 
   /**
-   * Apply the pending crop and exit crop mode to the select tool (TASK-40;
-   * amends TASK-4 AC#5). If the region is edited (not the untouched
-   * full-image rect, and not below the minimum size), re-rasterizes the
-   * background to it and translates every annotation by the crop origin, as
-   * a single undoable step (the same `{ imageBitmap, annotations }` snapshot
-   * mechanism as background replacement). If the region is untouched or
-   * degenerate, nothing is applied and no history step is pushed — either
-   * way, crop mode exits to select. Re-cropping means re-activating the crop
-   * tool, which re-initializes a fresh full-image region.
+   * Apply the pending crop (and any rotation) and exit crop mode to the
+   * select tool (TASK-40; amends TASK-4 AC#5; extended by TASK-52 D5 for
+   * rotation). Splits on whether there is any rotation at all
+   * (`cropAngle() === 0`):
+   *
+   * - **No rotation**: byte-identical to the pre-TASK-52 v2/TASK-40 path,
+   *   including its untouched/degenerate no-op guard (no history push) —
+   *   only now fed the source-space rect `frameToRotatedSource` derives from
+   *   the frame-space region (undoes the preview scale and the frame's
+   *   centering offset).
+   * - **Rotated**: resamples the background once through an `OffscreenCanvas`
+   *   (`documentRotation`'s matrix) and rigidly re-maps every annotation
+   *   (`rotateAnnotationForDocument`, computed BEFORE the await so the
+   *   existing stale-document guard below stays exact), landing rotation +
+   *   crop as a single undoable step.
+   *
+   * Either way, crop mode exits to select; re-cropping means re-activating
+   * the crop tool, which re-initializes a fresh full-image region.
    */
+  /**
+   * G1 (reviewer, TASK-52): a raster surface for `applyCrop`'s rotated
+   * branch — `OffscreenCanvas` when available, else a plain `<canvas>`
+   * (never attached to the DOM). Both expose the same
+   * `getContext("2d")` -> `imageSmoothingQuality` -> `setTransform` ->
+   * `drawImage` -> `createImageBitmap(...)` surface, so the rest of the
+   * branch is unchanged either way.
+   *
+   * Real Safari 16.4+ and WebView2 both implement `OffscreenCanvas` (D5), so
+   * in the shipped app this is always the first branch. It exists for two
+   * reasons: (1) Playwright's bundled WebKitGTK build does NOT implement
+   * `OffscreenCanvas` — without this fallback, every rotated-apply e2e test
+   * throws a bare `ReferenceError` under `pnpm test:e2e`, a harness gap, not
+   * a product bug; (2) it is a free safety net against any future webview
+   * older than the `OffscreenCanvas` floor `docs/WEB.md` documents for
+   * `convertToBlob`.
+   */
+  private createRasterSurface(w: number, h: number): OffscreenCanvas | HTMLCanvasElement {
+    if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(w, h);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+
   async applyCrop(): Promise<void> {
     if (!this.crop || !this.hasImage()) return;
     const src = this.doc.imageBitmap!;
-    const r = this.crop.rect;
-    const rect = computeCrop({ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, src.width, src.height, MIN_CROP_PX);
-    if (!rect) {
-      // Region is already full-image or below the minimum size: nothing to
-      // apply, but ✓ still exits crop mode (no history push).
+    // B2.1 (reviewer, TASK-52): the apply-time frame MUST be built from the
+    // EFFECTIVE (deadbanded) angle, not the raw `crop.tilt` that `cropFrame()`
+    // (used by render()/drawCropOverlay()) reads — see `effectiveFrame()`'s
+    // doc comment (shared with `cropFrame()`) for why the two must never be
+    // conflated. `angle` is read here (not just inside `effectiveFrame()`)
+    // because the `angle === 0` branch below needs it too, from the exact
+    // same `cropAngle()` call `effectiveFrame()` makes internally, so the
+    // zero-test and the frame geometry always agree.
+    const angle = this.cropAngle();
+    const frame = this.effectiveFrame();
+    const rectF = this.cropRect(frame);
+    const srcRect = frameToRotatedSource(rectF, frame);
+
+    if (angle === 0) {
+      // Pure crop — byte-identical to the TASK-4/40 path (D5).
+      const rect = computeCrop(
+        { x: srcRect.x, y: srcRect.y },
+        { x: srcRect.x + srcRect.w, y: srcRect.y + srcRect.h },
+        fullImageRect(src.width, src.height),
+        MIN_CROP_PX,
+      );
+      if (!rect) {
+        // Region is already full-image or below the minimum size: nothing to
+        // apply, but ✓ still exits crop mode (no history push).
+        this.setTool("select");
+        return;
+      }
+      const cropped = await createImageBitmap(src, rect.x, rect.y, rect.w, rect.h);
+      // The document may have changed (new paste/capture, undo/redo) while awaiting.
+      // Note: setBackground/restore may have already torn down and, if the crop
+      // tool was still active, re-initialized `this.crop` for the *new* image
+      // during this await — this stale abort path never touches `this.crop`, so
+      // it is safe to just discard the outdated bitmap and return regardless.
+      if (this.doc.imageBitmap !== src) {
+        cropped.close();
+        return;
+      }
+      this.history.push(this.snapshot());
+      this.doc.imageBitmap = cropped;
+      this.doc.annotations = this.doc.annotations.map((a) => translateAnnotation(a, -rect.x, -rect.y));
+      this.canvas.width = rect.w;
+      this.canvas.height = rect.h;
+      this.fitCanvasToStage();
+      this.selectedId = null;
+      this.move = null;
+      this.resize = null;
+      this.rotateDrag = null;
+      this.magnifierPlace = null;
+      this.draft = null;
+      // Exit crop mode to select on the newly-cropped image (setTool renders).
+      // Guarded: switching tools during the await already tore crop down (and,
+      // if the crop tool was re-armed for a *different* image meanwhile, that
+      // state must not be clobbered here) — in that case just render directly.
+      if (this.crop) this.setTool("select");
+      else this.render();
+      return;
+    }
+
+    // Rotated apply (D5/D6): one resample of the background plus a rigid
+    // remap of every annotation, landing rotation + crop as a single
+    // undoable step. `mapped` is computed BEFORE the await so the
+    // stale-document guard below (identical to the pure-crop path above)
+    // stays exact.
+    const r = documentRotation(src.width, src.height, angle, srcRect);
+    if (r.out.w < 1 || r.out.h < 1) {
+      // Reviewer F7 on TASK-52: a degenerate `srcRect` (e.g. a sub-pixel
+      // region at the MIN_CROP_PX floor rounding down) can make
+      // `documentRotation`'s `out.w`/`out.h` round to 0. `new
+      // OffscreenCanvas(0, 0)` is invalid, so bail out here exactly like the
+      // pure-crop path's own no-op guard above: exit crop mode to select, no
+      // history push.
       this.setTool("select");
       return;
     }
-    const cropped = await createImageBitmap(src, rect.x, rect.y, rect.w, rect.h);
-    // The document may have changed (new paste/capture, undo/redo) while awaiting.
-    // Note: setBackground/restore may have already torn down and, if the crop
-    // tool was still active, re-initialized `this.crop` for the *new* image
-    // during this await — this stale abort path never touches `this.crop`, so
-    // it is safe to just discard the outdated bitmap and return regardless.
+    const mapped = this.doc.annotations.map((a) => rotateAnnotationForDocument(a, r, this.ctx));
+    const off = this.createRasterSurface(r.out.w, r.out.h);
+    const octx = off.getContext("2d")!;
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
+    octx.setTransform(...r.matrix);
+    octx.drawImage(src, 0, 0);
+    const rotated = await createImageBitmap(off);
+    // Same stale-document guard as the pure-crop path above; the source
+    // bitmap is never close()d — history holds it by reference.
     if (this.doc.imageBitmap !== src) {
-      cropped.close();
+      rotated.close();
       return;
     }
     this.history.push(this.snapshot());
-    this.doc.imageBitmap = cropped;
-    this.doc.annotations = this.doc.annotations.map((a) => translateAnnotation(a, -rect.x, -rect.y));
-    this.canvas.width = rect.w;
-    this.canvas.height = rect.h;
+    this.doc.imageBitmap = rotated;
+    this.doc.annotations = mapped;
+    this.canvas.width = r.out.w;
+    this.canvas.height = r.out.h;
     this.fitCanvasToStage();
     this.selectedId = null;
     this.move = null;
@@ -789,10 +1438,6 @@ export class Editor {
     this.rotateDrag = null;
     this.magnifierPlace = null;
     this.draft = null;
-    // Exit crop mode to select on the newly-cropped image (setTool renders).
-    // Guarded: switching tools during the await already tore crop down (and,
-    // if the crop tool was re-armed for a *different* image meanwhile, that
-    // state must not be clobbered here) — in that case just render directly.
     if (this.crop) this.setTool("select");
     else this.render();
   }
@@ -1345,8 +1990,9 @@ export class Editor {
 
   /**
    * Position the floating delete button just outside the selection
-   * marquee's NE corner, using the same bitmap-px -> CSS-px mapping as
-   * `positionCropControls`/`positionTextEditor`, clamped to stay fully
+   * marquee's NE corner, using the same bitmap-px -> CSS-px mapping
+   * `positionTextEditor` uses (the crop controls group no longer needs this
+   * mapping — UI-1 addendum moved it to pure CSS), clamped to stay fully
    * inside the stage viewport. `angle` rotates which world point counts as
    * "NE": `rotatedCorners(paddedBounds, angle)[1]` — an exact identity at
    * angle 0, so this is byte-identical to the pre-TASK-41 corner formula
@@ -1483,20 +2129,44 @@ export class Editor {
   }
 
   /**
-   * Dimmed exterior + dashed border + corner handles for the active crop
-   * region. Not exported (see render()). Also repositions the floating
-   * ✓/✗ controls so they track the rect every frame.
+   * Dimmed exterior + rotated-image outline + dashed border + corner
+   * handles for the active crop region, all read from `frame` (D0/D1/D3).
+   * Not exported (see render()). Also updates the live angle readout every
+   * render (the floating controls group's own position is now pure CSS —
+   * UI-1 addendum — so no per-render repositioning call is needed here).
+   *
+   * `frame` is threaded in by the caller (`render()`, the only call site)
+   * rather than recomputed here via `cropFrame()` — non-blocking reviewer
+   * fixup on TASK-52: `render()` already computes the exact same
+   * `cropFrameFor` result once per frame to apply the preview transform, and
+   * a second independent call site recomputing the same geometry (even
+   * though, being pure, it agrees bit-for-bit today) is exactly the kind of
+   * duplication the design note's "one owner" discipline warns against.
    */
-  private drawCropOverlay(): void {
+  private drawCropOverlay(frame: CropFrame): void {
     if (!this.crop) return;
     const { ctx, canvas } = this;
-    const { x, y, w, h } = this.crop.rect;
+    const { x, y, w, h } = this.cropRect(frame);
 
     ctx.fillStyle = "rgba(0,0,0,0.45)";
     ctx.fillRect(0, 0, canvas.width, y); // top
     ctx.fillRect(0, y + h, canvas.width, canvas.height - (y + h)); // bottom
     ctx.fillRect(0, y, x, h); // left
     ctx.fillRect(x + w, y, canvas.width - (x + w), h); // right
+
+    // TASK-52 D1 layer 3: stroke the rotated image's own outline — the only
+    // cue that says "the picture ends here, you are now on the drag band",
+    // and what makes a tilt legible at small angles. Drawn AFTER the dim
+    // (so it's visible on the dark band) and BEFORE the dashed crop border
+    // below (so the region's own chrome stays dominant).
+    const imageCorners = this.rotatedImageCorners(frame);
+    ctx.beginPath();
+    ctx.moveTo(imageCorners[0].x, imageCorners[0].y);
+    for (let i = 1; i < imageCorners.length; i++) ctx.lineTo(imageCorners[i].x, imageCorners[i].y);
+    ctx.closePath();
+    ctx.lineWidth = 1 * this.cropScale();
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.stroke();
 
     ctx.setLineDash([6, 4]);
     ctx.lineWidth = 3;
@@ -1523,56 +2193,57 @@ export class Editor {
       ctx.strokeRect(c.x - half, c.y - half, side, side);
     }
 
-    this.positionCropControls();
+    this.updateCropReadout();
+    // The controls group needs no per-render (or per-resize) JS
+    // repositioning at all: it used to be repositioned every render,
+    // anchored to the crop rect's SE corner (`positionCropControls`, long
+    // deleted); that anchor did not scale to a 5-control group. It then
+    // became a `position: absolute` overlay docked at `#stage`'s
+    // bottom-centre by pure CSS (the UI-1 addendum) — which fixed the
+    // sizing problem but turned out to still cover the crop corner handles
+    // on several real viewports (a blocking regression, TASK-4 AC#2). It is
+    // now an IN-FLOW `#app` child (see `initCrop()`'s doc comment and the
+    // design note's addendum superseding UI-1) — CSS derives its layout,
+    // and `#stage`'s own resulting shrink, for free either way.
   }
 
   /**
-   * Position the floating ✓/✗ controls in stage-local CSS px, near the crop
-   * rect's bottom-right corner, using the same bitmap-px -> CSS-px mapping as
-   * `positionTextEditor`. The default placement is outside the region,
-   * offset down-right of the SE handle by `HANDLE_MARGIN_PX` so the group
-   * never sits on top of (and steals clicks from) the handle. When that
-   * placement would be clamped back onto the handle — the crop rect touching
-   * the stage's bottom/right edge — the group instead goes inside the
-   * region, offset up-left of the SE handle by the same margin, keeping the
-   * handle clear from the other side. A final clamp keeps the group fully
-   * inside the stage viewport regardless of which placement was chosen.
+   * Write the live total-angle label (D2): `normalizeAngle(quarter*90 +
+   * tilt)` rounded to whole degrees. DOM write only (`textContent`), no
+   * reflow risk — `.crop-angle`'s CSS `min-width` absorbs any digit-count
+   * change without moving either rotate button under the user's finger
+   * mid-drag.
+   *
+   * Reviewer (non-blocking, TASK-52): `cropAngle()`'s `normalizeAngle` keeps
+   * the STORED angle in `(-180°, 180°]` — that range is correct for the
+   * stored state (it is what every geometry function in crop.ts/rotate.ts
+   * expects) and is left exactly as-is. But it made three clockwise quarter
+   * turns (270°) display as "-90°" in the readout, which reads as backwards
+   * rotation to the user. The wrap to `[0°, 360°)` below is applied ONLY to
+   * this display string, after rounding, so it can never feed back into
+   * `crop.tilt` or any stored angle.
+   *
+   * Reviewer (readout precision, 2026-08-19 polish round): plain
+   * `Math.round` showed "0°" for anything under 0.5° even though a real
+   * resample already happens above the 0.1° deadband (`TILT_DEADBAND_RAD`)
+   * — a bare 4px arming-slop drag on a large desktop canvas lands around
+   * 0.46°, which rounded straight to "0°" and made the drag look like it
+   * had done nothing. Below 1° (and not exactly 0 — the deadbanded,
+   * genuinely-untouched idle state stays a plain "0°") show one decimal
+   * place instead, SIGNED and unwrapped: a small in-progress tilt is
+   * already close to 0, so "0.5°"/"-0.5°" is more informative than
+   * wrapping it up near "359.5°". At or above 1° magnitude the existing
+   * `[0°, 360°)` wrap + integer rounding above still applies.
    */
-  private positionCropControls(): void {
+  private updateCropReadout(): void {
     if (!this.crop) return;
-    const { controls, rect } = this.crop;
-    const canvasRect = this.canvas.getBoundingClientRect();
-    const stageEl = this.canvas.parentElement!;
-    const stageRect = stageEl.getBoundingClientRect();
-    const scale = canvasRect.width / this.canvas.width;
-    const originX = canvasRect.left - stageRect.left;
-    const originY = canvasRect.top - stageRect.top;
-
-    const seX = originX + (rect.x + rect.w) * scale;
-    const seY = originY + (rect.y + rect.h) * scale;
-
-    const cw = controls.offsetWidth || 72;
-    const ch = controls.offsetHeight || 32;
-
-    let left = seX + HANDLE_MARGIN_PX;
-    let top = seY + HANDLE_MARGIN_PX;
-
-    const clampedLeft = Math.min(Math.max(left, 0), stageRect.width - cw);
-    const clampedTop = Math.min(Math.max(top, 0), stageRect.height - ch);
-    if (clampedLeft !== left || clampedTop !== top) {
-      // Outward placement got clamped back onto the handle: flip to inside
-      // the region, offset up-left of the SE corner by the same margin.
-      left = seX - HANDLE_MARGIN_PX - cw;
-      top = seY - HANDLE_MARGIN_PX - ch;
+    const rawDeg = (this.cropAngle() * 180) / Math.PI;
+    if (rawDeg !== 0 && Math.abs(rawDeg) < 1) {
+      this.crop.readout.textContent = `${rawDeg.toFixed(1)}°`;
+      return;
     }
-
-    // Final clamp so the control group stays fully inside the stage viewport
-    // regardless of which placement branch ran above.
-    left = Math.min(Math.max(left, 0), stageRect.width - cw);
-    top = Math.min(Math.max(top, 0), stageRect.height - ch);
-
-    controls.style.left = `${left}px`;
-    controls.style.top = `${top}px`;
+    const totalDeg = ((Math.round(rawDeg) % 360) + 360) % 360;
+    this.crop.readout.textContent = `${totalDeg}°`;
   }
 
   // ---- pointer interaction -------------------------------------------------
@@ -1831,17 +2502,36 @@ export class Editor {
     }
 
     if (tool === "crop") {
-      // Manages its own pointer capture: only a handle grab takes capture.
-      // A press elsewhere in the region (or if crop state is somehow absent)
-      // is inert — no capture, no draft.
+      // Manages its own pointer capture: a handle grab or a tilt drag both
+      // take capture; a press inside the region does not (D4's three-way
+      // decision order). If crop state is somehow absent, this is a no-op.
       if (!this.crop) return;
-      const h = handleAt(p, this.crop.rect, this.handleHitRadius(e.pointerType));
+      const frame = this.cropFrame();
+      const rect = this.cropRect(frame);
+      const h = handleAt(p, rect, this.handleHitRadius(e.pointerType));
       if (h) {
+        // 1. Corner handle.
         this.canvas.setPointerCapture(e.pointerId);
         this.crop.drag = h;
         this.canvas.style.cursor = this.cursorForHandle(h);
         this.render();
+        return;
       }
+      if (!this.pointInRect(p, rect)) {
+        // 2. Outside the region -> tilt. Capture is mandatory: "drag
+        // outside the image" is exactly the gesture that leaves the canvas
+        // box. No render() here — nothing has changed yet.
+        this.canvas.setPointerCapture(e.pointerId);
+        this.crop.rotate = {
+          startPointer: p,
+          startTilt: this.crop.tilt,
+          pivot: { x: frame.w / 2, y: frame.h / 2 },
+          armed: false,
+        };
+        this.canvas.style.cursor = ROTATE_CURSOR_ACTIVE;
+        return;
+      }
+      // 3. Inside the region -> inert (v1/v2's contract, preserved verbatim).
       return;
     }
 
@@ -1985,7 +2675,7 @@ export class Editor {
   private onMove(p: Point, shiftKey = false, pointerType = ""): void {
     const tool = this.tool;
 
-    // Priority: rotate > resize > move > crop drag > draft > hover.
+    // Priority: rotate > resize > move > crop tilt > crop handle drag > draft > hover (D4).
     if (this.rotateDrag) {
       const { original, pivot, startAngle, startPointer } = this.rotateDrag;
       const newAngle = rotationFromDrag(pivot, startPointer, p, startAngle, shiftKey);
@@ -2080,9 +2770,33 @@ export class Editor {
       return;
     }
 
+    if (this.crop?.rotate) {
+      // B2.2: unarmed until the pointer clears TILT_SLOP_PX from the grab —
+      // a tap-and-release never writes `crop.tilt` at all. Once armed for
+      // this gesture, stays armed (checking every move would let the
+      // pointer wander back inside the slop radius and freeze mid-drag).
+      const { startPointer, startTilt, pivot, armed } = this.crop.rotate;
+      if (!armed) {
+        const dist = Math.hypot(p.x - startPointer.x, p.y - startPointer.y);
+        if (dist <= TILT_SLOP_PX * this.cropScale()) {
+          this.canvas.style.cursor = ROTATE_CURSOR_ACTIVE;
+          return;
+        }
+        this.crop.rotate.armed = true;
+      }
+      // D4: relative to the grab (tiltFromDrag never snaps the image to the
+      // pointer), snapped to 15° with Shift, clamped to +/-MAX_TILT_RAD.
+      this.crop.tilt = tiltFromDrag(pivot, startPointer, p, startTilt, shiftKey);
+      this.canvas.style.cursor = ROTATE_CURSOR_ACTIVE;
+      this.render();
+      return;
+    }
+
     if (this.crop?.drag) {
-      const bitmap = this.doc.imageBitmap!;
-      this.crop.rect = applyHandleDrag(this.crop.rect, this.crop.drag, p, bitmap.width, bitmap.height, MIN_CROP_PX);
+      const frame = this.cropFrame();
+      const rect = applyHandleDrag(this.cropRect(frame), this.crop.drag, p, frame.bounds, MIN_CROP_PX);
+      this.crop.norm = normalizeRect(rect, frame.bounds);
+      this.crop.touched = true;
       this.render();
       return;
     }
@@ -2139,8 +2853,16 @@ export class Editor {
         this.canvas.style.cursor = hit ? "move" : "default";
       }
     } else if (tool === "crop" && this.crop) {
-      const h = handleAt(p, this.crop.rect, this.handleHitRadius(pointerType));
-      this.canvas.style.cursor = h ? this.cursorForHandle(h) : "default";
+      // Hover cursor rules (D4): a corner handle wins, else outside the
+      // region reads as the tilt affordance, else inside is the resting
+      // (inert) cursor.
+      const rect = this.cropRect();
+      const h = handleAt(p, rect, this.handleHitRadius(pointerType));
+      if (h) {
+        this.canvas.style.cursor = this.cursorForHandle(h);
+      } else {
+        this.canvas.style.cursor = this.pointInRect(p, rect) ? "default" : ROTATE_CURSOR_HOVER;
+      }
     }
   }
 
@@ -2202,6 +2924,16 @@ export class Editor {
       // The pointer hasn't necessarily moved since the last hover check, so
       // fall back to the tool's resting cursor rather than leaving "grabbing".
       this.canvas.style.cursor = this.tool === "select" ? "default" : "crosshair";
+      return;
+    }
+
+    if (this.crop?.rotate) {
+      // D4: tilt release commits nothing to history either — the tilt only
+      // becomes undoable state on applyCrop(). Pointer capture is released
+      // implicitly by the browser on pointerup.
+      this.crop.rotate = null;
+      this.canvas.style.cursor = "crosshair";
+      this.render();
       return;
     }
 

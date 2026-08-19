@@ -4,7 +4,7 @@ title: In-editor crop tool
 status: Done
 assignee: []
 created_date: '2026-07-12 02:44'
-updated_date: '2026-07-23 10:28'
+updated_date: '2026-08-19 02:59'
 labels:
   - editor
 dependencies:
@@ -37,6 +37,10 @@ Crop the current document from within the editor: select a rectangle on the canv
 2026-07-15: v2 implemented per docs/design/2026-07-15-crop-tool-v2-handles.md: corner handles with pin/clamp/no-flip, floating on-canvas Apply/Cancel controls (text-editor overlay pattern), inline SVG crop icon. Reviewer: approve-after-fixes -> fixes applied (controls offset clear of SE handle; setBackground re-inits crop when crop tool active; 3 nits) -> confirmed-approve. pnpm check clean, pnpm test 58/58. Pending: Windows E2E of AC#2-#5.
 
 2026-07-23: AC#5 amended per user decision in TASK-40 — ✓/✗ (and Enter/Esc) now exit crop mode to the select tool instead of keeping crop armed; the old 'cancel resets to full image' behavior is removed. See TASK-40 for the new contract.
+
+2026-08-19 (TASK-52, user decision): AC#3 gains one explicit exception. Whole-document rotation (added to crop mode by TASK-52) maps every annotation rigidly, but a RECT-lens magnifier cannot carry an angle — magnifier is excluded from canRotate because its drawImage source rectangle is always axis-aligned in image space. Under a FREE (non-quarter) rotation a rect lens therefore un-tilts, keeping its centre and zoom; circle lenses are exact at any angle, and rect lenses are exact under quarter turns. Accepted by the user 2026-08-19 rather than restricting free rotation. See docs/design/2026-08-19-crop-canvas-rotation.md.
+
+2026-08-19 (TASK-52, user decision): AC#2's "on-canvas Apply control" is amended in placement, not in substance. Adding the rotation controls grew the floating group from 2 to 5 controls, and a rendered iPhone check proved the group then covered the two BOTTOM corner handles - a portrait image could not be shrunk from the bottom at all, and in landscape the same gesture tapped a rotate button. The group is therefore no longer an on-canvas overlay: it is an in-flow bar at the bottom of #app that replaces #share-bar while crop is active (body.crop-bar-open, the same pattern TASK-38 established for #badge-bar). AC#2's requirement - the crop is confirmable with the mouse/finger alone, with no keyboard - still holds, and all four corner handles are now reachable (verified: 96/96 elementFromPoint probes at the handles and band midpoints hit the canvas, across three viewports and three fixtures). Losing Copy/Share for crop's duration was accepted by the user 2026-08-19; crop is modal, and the badge bar already sets that precedent.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

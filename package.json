@@ -13,6 +13,7 @@
     "check": "tsc --noEmit",
     "preview": "vite preview",
     "preview:web": "vite preview --config vite.config.web.ts",
+    "preview:iphone": "bash scripts/preview-iphone.sh",
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",

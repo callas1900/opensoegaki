@@ -43,7 +43,7 @@ never `structuredClone`d into a history snapshot, and never passed through
 `renderAnnotations` — so it cannot be undone/redone as data and cannot leak into
 an exported PNG.
 
-## Crop
+## Crop and canvas rotation
 
 The crop tool is a **destructive, re-rasterizing** operation, not a stored
 crop rectangle: on apply, the editor re-rasterizes the background to the
@@ -58,43 +58,129 @@ off-canvas coordinates), never clipped or deleted** — clipping would mutate
 annotation geometry and deleting would lose data; translate-and-keep is fully
 reversible via undo and consistent with the select tool already allowing
 annotations to be dragged partly off-canvas. `src/editor/crop.ts` holds the
-pure `computeCrop` geometry (apply-time no-op/min-size guard and integer
-normalizer) plus the handle geometry (`fullImageRect`, `handleAt`,
-`applyHandleDrag`), and is deliberately not imported by `exporter.ts`.
+pure geometry (`computeCrop`'s apply-time no-op/min-size guard and integer
+normalizer, the handle geometry `fullImageRect`/`handleAt`/`applyHandleDrag`,
+and the frame/inscribed-rect/normalized-region math below) and is
+deliberately not imported by `exporter.ts`.
+
+**Whole-document rotation (TASK-52) lives inside crop mode** and shares that
+one apply step: quarter turns from the ⟲/⟳ controls in the crop bar (an
+in-flow bar below the stage, not drawn on the canvas — see "Region, handles
+and controls" below), free rotation by dragging the band outside the image,
+and ✓ commits rotation + crop together
+as a single undoable step. Rotation is destructive for exactly the same
+reason crop is — there is no document-level angle anywhere in the model, so
+`render.ts`, `exporter.ts` and `model.ts` never learn about it. See
+`docs/design/2026-08-19-crop-canvas-rotation.md` for the full design.
+
+### Frame space (crop-mode-only preview coordinates)
+
+While crop mode is active the live canvas is a **frame**, not the document:
+it is the quarter-turned document size grown outward by a rotate band
+(`ROTATE_BAND_CSS_PX = 40`, converted to frame px once per frame-size change
+and frozen), clamped per axis by the platform's `maxImportDimension` so the
+backing store can never exceed the iOS ceiling TASK-35.14 already validated.
+Inside the frame the image is drawn rotated by `quarter * 90° + tilt` and
+uniformly scaled by `s` so it always fits inside the band; `cropFrameFor` in
+`crop.ts` is the single owner of that transform, and `render()`,
+`drawCropOverlay()` and `applyCrop()` all read it rather than re-deriving it.
+Because annotations live in image coordinates, wrapping the background
+`drawImage` + `renderAnnotations` in that one transform rotates the whole
+preview with zero model changes.
+
+**The canvas is resized only on discrete events** — `initCrop`, `setQuarter`,
+`applyCrop`, `teardownCrop` — and **never mid-drag**: the tilt gesture is
+relative (`tiltFromDrag`, built on `rotationFromDrag`'s idiom), so changing
+the frame under an in-flight drag would stale its pivot and start pointer and
+make the angle jump. That is also why tilt is clamped to ±45°
+(`MAX_TILT_RAD`): promoting 45° into a quarter turn would require exactly
+that mid-drag resize. Larger angles are reached by combining a quarter turn
+with a tilt.
+
+**`teardownCrop` is the single owner of restoring the canvas dimensions.**
+The frame is larger than the document even at zero rotation, so every exit
+path (✗, tool switch, undo/redo, new document) must shrink the canvas back to
+`doc.imageBitmap`'s size — one property, one owner, guarded by an e2e test.
+
+**The crop region is stored normalized** (`norm`, a ratio of the inscribed
+rect), not in integer pixels: re-rounding a pixel rect on every angle change
+drifts, so tilting out and back would silently shrink the region. The pixel
+rect is derived on demand by `denormalizeRect` and rounded only in
+`applyCrop`. The region's bounds are the **largest axis-aligned rectangle
+inscribed in the rotated image** (`rotatedRectWithMaxArea`), which is what
+guarantees a rotated export never contains a transparent margin; `norm` is
+only ever written back to the full inscribed rect (`FULL_NORM`) by
+`setQuarter`, on a quarter turn, when the region has never been touched — a
+tilt never writes `norm` at all, so an untouched region stays covering the
+whole inscribed rect only because `norm` was already `FULL_NORM` to begin
+with. A user-dragged region rides the bounds proportionally (and is
+transposed with a quarter turn so it keeps tracking the same content).
+`computeCrop` and `applyHandleDrag` therefore clamp against that `bounds`
+rect rather than against the image.
+
+**Apply** splits on whether there is any rotation. With none, the path is the
+original crop path verbatim, including its "region covers everything ⇒ no-op,
+no history push" guard. With rotation, the background is re-rasterized once
+through an `OffscreenCanvas` (the `decodeClampedBitmap` idiom:
+`imageSmoothingQuality = "high"` then `createImageBitmap`) at **1 output pixel
+per source pixel**, so no resolution and no stroke/font proportion is lost,
+and every annotation is mapped by the same rigid rotation
+(`rotateAnnotationForDocument` in `rotate.ts`). The pre-existing
+stale-document guard is preserved: everything is computed into locals before
+the `await`, and the result is discarded if the document changed meanwhile.
+
+**Documented deviations** (recorded in TASK-4 and TASK-52): a **rect-lens
+magnifier un-tilts under a free rotation** — it keeps its centre and zoom, but
+cannot carry an angle, because a magnifier's `drawImage` source rectangle is
+always axis-aligned in image space (see `canRotate` in `rotate.ts`); circle
+lenses are exact at any angle and rect lenses are exact under quarter turns.
+Each rotate-apply resamples the background once. Exporting while crop mode is
+active exports the *un-rotated* document, the same consequence as crop chrome
+never reaching a raster.
+
+### Region, handles and controls
 
 The crop **region starts as the full loaded image** with a draggable corner
 handle (`nw`/`ne`/`sw`/`se`) at each vertex. Dragging a corner shrinks or
 expands that corner while the diagonally-opposite corner stays pinned,
-clamped to the image bounds and to `MIN_CROP_PX` in each dimension (never
-flipping past the pinned corner). Dragging inside the region (not on a
-handle) is inert — the app deliberately does not support whole-region
-translation in the MVP. An on-canvas **✓ Apply / ✗ Cancel** overlay (a small
-floating `div.crop-controls`, positioned near the region's bottom-right
-corner, offset clear of the SE handle so it never steals the handle's
-clicks) commits or resets the crop with the mouse alone; `Enter`/`Esc`
-remain as optional keyboard accelerators for the same two actions.
+clamped to the inscribed bounds and to `MIN_CROP_PX` in each dimension (never
+flipping past the pinned corner). A press **inside** the region is inert — the
+app deliberately does not support whole-region translation. A press
+**outside** the region (the band, or the dimmed exterior once the region has
+been shrunk) starts a tilt drag, with pointer capture, `Shift` snapping the
+absolute angle to 15° increments.
 
-**Invariant: while the crop tool is active and an image is loaded, a region
-with handles and ✓/✗ controls is always visible** (v2.1, 2026-07-16 —
-revised from user E2E feedback on the v2 mouse-only-apply UI). Neither
-cancel nor apply tears crop mode down:
-- **✗ / `Esc`** resets the region to the full image (`cancelCrop()` sets
-  `crop.rect = fullImageRect(...)`) — crop mode stays active with fresh
-  handles, ready for another attempt. The document is never touched.
-- **✓ / `Enter`** on a shrunk region applies the crop (single undoable step,
-  as above) and then re-arms the region to the *new* cropped image's full
-  extent, so the user can immediately crop again. On an unshrunk full-image
-  region (or a below-`MIN_CROP_PX` region), it is the existing no-op guard:
-  no document change, no history push, and the region simply stays as-is.
+A control group (`div.crop-controls`, built in JS by `initCrop()`) carries
+`⟲ / angle readout / ⟳ / ✗ / ✓` in a single row, all as inline SVG so they
+stay legible on iOS. It is an **in-flow flex child of `#app`** — a sibling of
+`#stage` and `#share-bar`, which it replaces (via `body.crop-bar-open`,
+mirroring `body.badge-bar-open`) while crop is active — not an overlay drawn
+on top of `#stage`. It went through two earlier positioning strategies, both
+retired: first it tracked the crop rect's bottom-right corner in JS
+(`positionCropControls`), which stopped working once the group grew to a
+five-control block wider than a small test fixture; then (the 2026-08-19
+UI-1 addendum) it became an absolutely-positioned overlay docked at the
+stage's bottom-centre, which fixed the "wider than the image" failure but
+turned out to still cover the two bottom crop-corner handles on several
+real viewport/fixture combinations — a blocking regression, since it made
+the region impossible to shrink from the bottom (TASK-4 AC#2). The in-flow
+fix is the same one TASK-38 already landed for `#badge-bar` hitting the
+identical failure mode: `#stage` shrinks via its own `flex: 1` to make room,
+so the corner handles land on the canvas's own reduced, fully-visible
+footprint instead of underneath the bar. See the design note's addendum
+superseding UI-1 for the measurements and the CSS. **✓ / `Enter`** applies (or, on an untouched
+and unrotated region, applies nothing and pushes no history) and **✗ / `Esc`**
+discards the rotation and the region; both then exit crop mode to the select
+tool (TASK-40, amending TASK-4 AC#5's original "crop stays armed" contract).
+Re-cropping means re-activating the crop tool, which re-initializes a fresh
+full-image region at zero rotation. `Editor.onToolChanged` keeps the
+toolbar's `.active` highlight in sync with those editor-initiated tool
+changes.
 
-Because the region always starts (and resets to) full-image,
-`hasPendingCrop()` is true for the entire time the crop tool is active.
-Crop UI teardown (removing the ✓/✗ controls and clearing crop state) now
-happens **only** when the user switches to a different tool, or a new
-document replaces the current one (new paste/capture, or undo/redo) — each
-of those immediately re-initializes a fresh full-image region if the crop
-tool is still the active tool, so switching *away* from and back to crop, or
-undoing/redoing while cropping, never leaves a dead toolbar state.
+Crop state (region, angles, band, drag records, controls) is **never part of
+`doc`, of a history snapshot, or of `renderAnnotations`** — like `selectedId`,
+it is transient view state, so it cannot be undone as data and cannot leak
+into an exported PNG.
 
 ## Selection & hit-testing
 
@@ -1029,17 +1115,20 @@ exported or copied image. `magnifier.ts` itself must never import
 | `Ctrl+C` / `Cmd+C` | Copy exported PNG to clipboard |
 | `Ctrl+Shift+V` / `Cmd+Shift+V` | Insert clipboard image as an annotation (plain `Ctrl+V` still replaces the background) |
 | `Del` / `Backspace` | Delete the selected annotation (undoable) |
-| `Esc` | Reset the crop region to the full image while cropping, else deselect |
-| `Enter` | Apply the crop region (no-op on an unshrunk full-image region) |
+| `Esc` | While cropping: cancel the crop (discard the pending region/rotation) and exit crop mode to the select tool. Otherwise: deselect |
+| `Enter` | While cropping: apply the crop (and any rotation) and exit crop mode to the select tool (no-op, no history push, on an untouched, unrotated region) |
 | `Ctrl+S` / `Cmd+S` | Save annotated PNG via native dialog |
 | `Ctrl+N` / `Cmd+N` | New: discard the document back to the welcome/empty state (undoable; no-op while already empty). Browsers may reserve this and swallow it — the `#new-doc` toolbar button is the primary affordance |
 
-`Esc`/`Enter` are strictly optional **accelerators** for the crop tool's
-on-canvas ✗/✓ controls — the mouse alone is always sufficient to reset or
-apply a crop. Neither ever exits crop mode: `Esc`/✗ resets the region to the
-full image and `Enter`/✓ (after a real apply) re-arms the region to the
-newly-cropped image's full extent, so a region with handles is always
-visible while the crop tool is active (see "Crop" above).
+`Esc`/`Enter` are strictly optional **accelerators** for the crop bar's ✗/✓
+controls — the mouse alone is always sufficient to cancel or apply a crop.
+**Both exit crop mode to the select tool** (TASK-40, amending TASK-4 AC#5,
+which originally kept crop mode active on cancel): `Esc`/✗ discards the
+pending region and any rotation without touching the document, and
+`Enter`/✓ commits it as a single undoable step (see "Apply" above). This
+mirrors the crop bar's own ✗/✓ buttons exactly — see "Region, handles and
+controls" below and `cancelCrop()`/`applyCrop()`'s doc comments in
+`canvas.ts`.
 
 `Del`/`Backspace`/`Esc`/`Enter`/`Ctrl+S` are gated by an `isTypingTarget` guard
 in `main.ts` so a global handler never eats keys destined for a text field.
@@ -1138,14 +1227,13 @@ and font size (text) used for *new* annotations; it never restyles existing ones
 
 The **Crop** tool initializes the region to the full loaded image with
 draggable corner handles; the user shrinks it by dragging a corner (opposite
-corner pinned, clamped to image bounds and `MIN_CROP_PX`). A floating
-on-canvas **✓ Apply / ✗ Reset** control group, positioned near the region's
-bottom-right corner over the canvas (offset clear of the SE handle), applies
-or resets the crop with the mouse alone (see "Crop" above for what applying
-does to the document, and for the always-visible-region invariant); `Enter`/
-`Esc` remain as optional accelerators for the same actions, and neither ever
-leaves crop mode — resetting or re-arming the region, never tearing down the
-handles/controls. While the crop tool is active, live chrome dims the four
+corner pinned, clamped to the inscribed bounds and `MIN_CROP_PX`). An
+in-flow control group (`⟲ / angle readout / ⟳ / ✗ / ✓`, docked at the bottom
+of `#app` in place of `#share-bar` — see "Region, handles and controls"
+above for the current layout and its TASK-52 regression-fix history) applies
+or cancels with the mouse alone. `Enter`/`Esc` remain optional accelerators
+for the same two actions; both exit crop mode to the select tool (TASK-40)
+rather than merely resetting the region. While the crop tool is active, live chrome dims the four
 exterior regions, draws a dashed white+accent border around the region, and
 draws a small filled square handle at each corner — all drawn directly on
 the canvas context in `Editor.render()`, after selection chrome, so none of

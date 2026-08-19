@@ -72,3 +72,52 @@ export async function loadTestImage(page: Page, base64: string): Promise<void> {
   });
   await expect(page.locator("#stage")).not.toHaveClass(/empty/);
 }
+
+export interface CanvasGeometry {
+  /** Canvas element's on-screen (viewport) box, in CSS px. */
+  box: { x: number; y: number; width: number; height: number };
+  /** CSS px per bitmap px (`canvasRect.width / canvas.width`) -- matches Editor's own `cropScale()`⁻¹. */
+  scale: number;
+}
+
+/**
+ * `#canvas`'s current on-screen (viewport) box in CSS px, plus the CSS-px-
+ * per-bitmap-px `scale` (`canvasRect.width / canvas.width`) -- the same
+ * mapping `canvas.ts`'s `positionSelectionControls`/`toCanvas` use.
+ *
+ * Correction (2026-08-19 polish round): despite the name, this is used ONLY
+ * by crop-rotate.spec.ts today. rotate.spec.ts and the magnifier specs
+ * (magnifier.spec.ts, magnifier-rect.spec.ts) each still carry their own
+ * private `canvasGeometry`/`toScreen` copies of this exact idiom rather than
+ * importing from here -- do not refactor those specs as part of an unrelated
+ * change; this comment is corrected to stop claiming a sharing that doesn't
+ * exist, not a signal to go make it true.
+ */
+
+/** Read the canvas's current screen box + bitmap->CSS scale. */
+export async function canvasGeometry(page: Page): Promise<CanvasGeometry> {
+  const canvas = page.locator("#canvas");
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("#canvas has no box");
+  const attrs = await canvas.evaluate((el: HTMLCanvasElement) => ({ width: el.width, height: el.height }));
+  return { box, scale: box.width / attrs.width };
+}
+
+/** Map a bitmap-px point to a page (viewport) point, for `page.mouse` calls. */
+export function toScreen(geo: CanvasGeometry, bx: number, by: number): { x: number; y: number } {
+  return { x: geo.box.x + bx * geo.scale, y: geo.box.y + by * geo.scale };
+}
+
+/** RGBA of the single pixel at bitmap coordinates `(bx, by)`, read straight off the live canvas. */
+export async function pixelAt(page: Page, bx: number, by: number): Promise<[number, number, number, number]> {
+  return page.locator("#canvas").evaluate((el: HTMLCanvasElement, [x, y]: [number, number]) => {
+    const ctx = el.getContext("2d")!;
+    const d = ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+    return [d[0], d[1], d[2], d[3]] as [number, number, number, number];
+  }, [bx, by]);
+}
+
+/** Sum of absolute per-channel RGB difference between two RGBA samples (alpha ignored). */
+export function colorDelta(a: [number, number, number, number], b: [number, number, number, number]): number {
+  return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+}

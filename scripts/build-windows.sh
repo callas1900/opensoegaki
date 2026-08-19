@@ -4,12 +4,14 @@
 # (rustup MSVC + VS Build Tools + pnpm) does the work.
 set -euo pipefail
 
-# Derive the Windows-side path of this checkout instead of hardcoding it, so a
-# renamed or relocated clone keeps working.
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WIN_REPO_ROOT="$(wslpath -w "$REPO_ROOT")"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/windows.sh"
 
-powershell.exe -NoProfile -Command "
+# Resolve the interpreter first: when the Windows side is unreachable at all,
+# resolve_powershell's diagnostic is far more useful than wslpath failing.
+PS="$(resolve_powershell)"
+WIN_REPO_ROOT="$(win_repo_root)"
+
+"$PS" -NoProfile -Command "
   \$env:PATH = \"\$env:USERPROFILE\\.cargo\\bin;\$env:PATH\"
   Set-Location '$WIN_REPO_ROOT'
   pnpm tauri build

@@ -252,19 +252,102 @@ body.web-shell #stage { padding: 16px; padding-bottom: 24px; }
 .welcome-hint strong { color: #c9cdd2; }
 #stage:not(.empty) #welcome { display: none; }
 
+/* Single-row crop controls (TASK-52 regression fix, reviewer round
+   2026-08-19; design note docs/design/2026-08-19-crop-canvas-rotation.md,
+   addendum superseding UI-1/D2): an IN-FLOW `#app` child, exactly like
+   `#badge-bar` above — NOT an overlay floating on top of `#stage`.
+
+   The previous version (the 2026-08-19 UI-1 addendum) was
+   `position: absolute` and docked at `#stage`'s own bottom-centre.
+   Measured with `document.elementFromPoint` at the live crop corner-handle
+   positions, that opaque `z-index: 5` panel sat directly on top of the two
+   BOTTOM handles on several real geometries (a tall portrait fixture on
+   both a 390x844 WebKit viewport and the desktop Chromium shell), and on
+   top of the rotate buttons themselves on a small landscape fixture — a
+   press meant for the bottom-left handle never reached the canvas at all
+   (TASK-4 AC#2 FAIL: the region could not be shrunk from the bottom), and a
+   press meant for a handle silently rotated the document instead. TASK-38
+   already hit and solved this exact failure mode for `#badge-bar` ("the
+   fixed overlay bar hides the bottom of the photo, making it impossible to
+   stamp there"); this is the same fix (option A): `#stage` shrinks via its
+   own `flex: 1` to make room, so the crop handles always land on the
+   canvas's own reduced, fully-visible footprint instead of underneath the
+   bar. See canvas.ts's `initCrop()` comment for the JS half of this fix.
+
+   `body.crop-bar-open` (set/cleared by `initCrop()`/`teardownCrop()`)
+   mirrors `body.badge-bar-open` exactly: it REPLACES `#share-bar` while
+   crop is active (crop is modal, so losing Copy/Share for its duration is
+   the same trade-off the badge bar already makes) — see the rule below.
+   It also defensively hides `#badge-bar`, and `body.badge-bar-open`
+   defensively hides `.crop-controls`, so the two mutually-exclusive bars
+   (different tools, can never legitimately both be open) can never both
+   render even under an unexpected class-ordering bug — the same
+   "single open" discipline src/ui/badgebar.ts documents for itself.
+
+   ONE row now that the group is in-flow (not the old two), so the chrome
+   height stays close to `#share-bar`'s own instead of doubling it:
+   `[rotate-ccw] [angle] [rotate-cw] [cancel] [apply]`. Width arithmetic
+   (CLAUDE.md's mandated re-do; same `#badge-bar`-comment precedent),
+   against this rule's own `padding: 8px 12px`:
+     fixed content = 44 (ccw) + 56 (angle min-width) + 44 (cw) = 144px
+     + 4 gaps * 6px                                            =  24px
+     fixed total (row minus cancel/apply)                      = 168px
+   On a 390 CSS px viewport: inner width = 390 - 2*12 (padding) = 366px;
+   366 - 168 = 198px left for `.crop-cancel` + `.crop-apply` combined ->
+   99px each, comfortably over the 44px minimum. On the narrowest realistic
+   320 CSS px viewport: inner = 320 - 24 = 296px; 296 - 168 = 128px -> 64px
+   each, still over 44px. The row can therefore never overflow or wrap, and
+   never drops a button under 44px, on any supported viewport. */
 .crop-controls {
-  position: absolute; display: flex; gap: 4px; z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  background: var(--panel); border-top: 1px solid #45484e;
 }
+/* While the crop bar is open it replaces #share-bar (both are #app flex
+   children docked at the bottom) so #stage — and thus the whole photo —
+   stays fully visible and tappable underneath it, exactly like
+   body.badge-bar-open above. The remaining two rules are the defensive
+   cross-hide described in this block's own doc comment. */
+body.crop-bar-open #share-bar { display: none; }
+body.crop-bar-open #badge-bar { display: none; }
+body.badge-bar-open .crop-controls { display: none; }
 .crop-controls button {
-  min-width: 28px; height: 28px; border: 1px solid #45484e; border-radius: 6px;
+  width: 44px; height: 44px; border: 1px solid #45484e; border-radius: 6px;
   background: var(--panel); color: var(--fg); font-size: 14px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .crop-controls button:hover { background: #3a3d42; }
+.crop-controls svg { display: block; }
+/* Cancel/apply stretch to fill the row's remaining width (99px each at
+   390px, 64px each at 320px — see the arithmetic above), rather than the
+   fixed 44px squares the rotate buttons use. `min-width: 44px` (N5,
+   reviewer non-blocking round) makes the 44px HIG touch floor STRUCTURAL
+   rather than merely incidental to the row's current width arithmetic --
+   without it, a future viewport-width change or content-arithmetic edit
+   could shrink these below 44px with nothing in the CSS itself to stop it. */
+.crop-controls .crop-apply, .crop-controls .crop-cancel { flex: 1 1 0; width: auto; min-width: 44px; }
 .crop-controls .crop-apply { color: #4caf50; }
 .crop-controls .crop-cancel { color: var(--fg); }
+/* Live total-angle readout (D2): a non-interactive status label, not a
+   button — `pointer-events: none` keeps it out of the tap/click handling
+   entirely; min-width + tabular figures so the digit-count change across a
+   drag (e.g. "0°" -> "-135°") never moves either rotate button under the
+   user's finger. */
+.crop-angle {
+  min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg); font-size: 14px;
+}
 
 /* Floating delete-button overlay (TASK-35.11), shown only while an
-   annotation is selected — same positioning idiom as .crop-controls above. */
+   annotation is selected — absolutely positioned over #stage from JS
+   (`positionSelectionControls`'s bitmap-px -> CSS-px mapping in canvas.ts).
+   TASK-52's regression fix (2026-08-19) moved `.crop-controls` off this
+   overlay idiom entirely (now an in-flow #app bar, see that rule above) —
+   `.selection-delete` is the last remaining user of it. */
 .selection-delete {
   position: absolute; z-index: 6;
   min-width: 30px; height: 30px; border: 1px solid #45484e; border-radius: 6px;

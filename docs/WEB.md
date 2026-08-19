@@ -143,6 +143,61 @@ No new Tauri commands; the desktop IPC surface is unchanged.
   `pnpm build:web && pnpm preview:web --host` (`--host` exposes the preview
   server on the LAN for a real-device check) instead of `preview:web` on its own.
 
+### Real-device preview — `pnpm preview:iphone`
+
+`pnpm preview:iphone` (`scripts/preview-iphone.sh`) wraps that
+build-then-serve pair for an iPhone check and prints the one URL to type on the
+phone. It exists because the raw command does not get you there from this
+repo's usual WSL shell:
+
+- It cannot run in this WSL distro. `node_modules` was installed from Windows,
+  so the only rolldown native binding present is
+  `@rolldown/binding-win32-x64-msvc` (no linux-x64), and WSL's node is 22.6.0,
+  below vite 8's `>=22.12.0` floor — the same reason
+  `build-windows.sh`/`dev-windows.sh` exist. So the build and the server run on
+  the Windows side over PowerShell interop.
+- WSL2 sits behind its own NAT, so a server bound inside WSL is unreachable
+  from the phone regardless. Binding on the Windows side puts it on the LAN
+  interface the phone can actually see.
+- `--host` makes vite advertise every interface, including the WSL and Hyper-V
+  virtual adapters — precisely the addresses that silently fail from a phone.
+  The script filters out virtual **and disconnected** adapters (a Wi-Fi adapter
+  that is down still reports a plausible DHCP lease; adapter status is the only
+  reliable discriminator — see the comment in the script, and do not
+  reintroduce a "prefer Wi-Fi" heuristic) and puts the address the route table
+  would actually use first.
+
+The script runs from WSL, macOS or native Linux; on macOS/Linux it invokes vite
+directly. On native Windows you do not need it — plain
+`pnpm build:web && pnpm preview:web --host` works there.
+
+Flags: `--dev` serves the vite dev server from source (HMR while iterating on
+UI; no service worker, since registration is `PROD`-gated in `main-web.ts` —
+and note it serves the checkout read-only to the whole network over vite's
+`/@fs/` route, so trusted networks only), `--no-build` serves `dist-web/` as-is
+(fast, but this is exactly the stale-code trap above; it refuses to run if that
+build's baked-in base does not match), `--port <n>`. The default port is
+**4174, deliberately not 4173**: 4173 is `playwright.config.ts`'s `webServer`
+port, and its `reuseExistingServer: !process.env.CI` means a preview left
+running there would be silently reused by `pnpm test:e2e`, so the suite would
+check whatever this script is serving instead of `dist-web`. `PAGES_BASE=/`
+shortens the URL for typing on a phone and is forwarded across the
+WSL/Windows boundary so the build and the printed URL cannot disagree.
+
+**A LAN IP over plain HTTP is not a secure context in Safari**, which changes
+three things on this URL, none of them an error message:
+
+- the service worker does not register, so there is no offline shell — but
+  Add to Home Screen still works and still launches standalone (that is
+  `apple-mobile-web-app-capable`, not the SW);
+- Save/Share falls back to a plain file download, because `web.ts` gates on
+  `navigator.canShare`, which is `undefined` on an insecure origin;
+- the Copy button is **absent** rather than broken — `detectCopyPng()` finds no
+  `ClipboardItem`, so the `data-cap` gating hides it (TASK-35.4).
+
+Of the iOS checklist at the end of this document, steps 8, 9 and 11 therefore
+need the deployed Pages URL; the rest are exercisable against this preview.
+
 ### PWA — hand-rolled manifest + minimal service worker (no vite-plugin-pwa)
 
 - `pwa/manifest.webmanifest`: standalone display, **relative** `start_url`/`scope`
@@ -284,7 +339,11 @@ The web build presents as "OpenSoegaki" with an on-device privacy statement:
 
 ## iOS manual smoke-test checklist
 
-Run on a real iPhone against the deployed Pages URL:
+Run on a real iPhone against the deployed Pages URL. Steps 8, 9 and 11 need
+that deployed URL specifically (share, clipboard and the service worker all
+require a secure context); every other step can also be run against
+`pnpm preview:iphone` on the LAN, which is much faster to iterate on — see
+"Real-device preview" above.
 
 1. Open the site in Safari — app shell renders, no horizontal scroll, toolbar visible.
 2. Choose Photo → pick a 12 MP photo from the library — it loads without blanking.
